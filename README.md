@@ -11,12 +11,14 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 | Health check | `muse-spark-1.3`, Responses API | live |
 | Garment segmentation (`/api/segment`) | SAM 3.1 (`sam-3.1`), Responses API, streaming | live |
 | Garment tagging + single-garment gate (`/api/segment`) | `muse-spark-1.3`, Responses API, strict JSON | live |
+| Daily outfits + venue dress-code lookup (`/api/outfits`) | `muse-spark-1.3`, Responses API, strict JSON + `web_search` | live |
 
 ## Built during the hackathon
 
 - 2026-10-30: foundation — Next.js scaffold, `/api/health` (Spark), `/capture` photo upload to Vercel Blob, home page.
 - 2026-11-02: capture pipeline — photo → SAM 3.1 cutouts (14 nouns in parallel) → confidence ≥ 0.90 + area ≥ 2% + cross-noun IoU dedupe + footwear-pair merge → Spark tags + `is_single_garment` gate → Keep/Discard confirm into per-item Blob storage (`items/`, `candidates/`) → `/closet` grid grouped by type.
 - 2026-11-02: unscanned-photo backlog — `/capture` splits photos into "Not scanned yet" / "Scanned" with per-photo "Find clothes", "Scan all" (sequential), "Scan again", and photo delete; `/api/segment` takes a `photoPathname` in our own `photos/` store only (no arbitrary URLs); per-photo scan records in `photos-meta/` track `{ scannedAt, candidateIds, keptIds }`.
+- 2026-11-02: daily outfits — `/today` (mood/occasion chips, destination, geolocation + city fallback, 1–3 outfit collages, shuffle); `/api/outfits` fetches Open-Meteo forecast server-side, runs a separate Spark dress-code lookup (URL only from `url_citation`), counts closet coverage in code (no model call when incomplete), picks outfits via strict-JSON Spark with server-side ID/completeness validation + one retry, excludes session-shown combos; °C server-side, °F display for en-US.
 
 ## Third-party code
 

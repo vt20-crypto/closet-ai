@@ -19,6 +19,12 @@ export default function Home() {
       >
         View closet
       </Link>
+      <Link
+        href="/today"
+        className="inline-block min-h-14 rounded-2xl border border-neutral-400 px-6 py-4 text-center text-xl font-semibold"
+      >
+        Today&apos;s outfits
+      </Link>
       <HealthStatus />
     </main>
   );

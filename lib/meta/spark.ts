@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { RawOutfit } from "../outfits";
+
 import { getMetaClient } from "./client";
 
 const MODEL = "muse-spark-1.3";
@@ -93,6 +95,147 @@ function rejected(reason: string): GarmentTags {
  * Never throws: 429s are retried with backoff from 500ms (honoring
  * Retry-After); a 400 content_policy_violation becomes a rejection.
  */
+export interface DressCodeNote {
+  note: string;
+  url: string | null;
+}
+
+/**
+ * Separate dress-code lookup, only for a named venue/event. One sentence back.
+ * The source URL comes from the response's url_citation annotations, never
+ * from model text; no citation means no link. 10s timeout; any failure
+ * returns null so the caller skips it.
+ */
+export async function fetchDressCode(venue: string): Promise<DressCodeNote | null> {
+  const api = getMetaClient();
+  try {
+    const res = await api.responses.create(
+      {
+        model: MODEL,
+        reasoning: { effort: "low" },
+        tools: [{ type: "web_search" }],
+        input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
+      },
+      { timeout: 10_000, maxRetries: 0 },
+    );
+    const note = (res.output_text ?? "").trim();
+    if (!note) return null;
+    return { note, url: firstCitationUrl(res.output) };
+  } catch {
+    return null;
+  }
+}
+
+function firstCitationUrl(output: unknown): string | null {
+  if (!Array.isArray(output)) return null;
+  for (const item of output) {
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const annotations = (part as { annotations?: unknown }).annotations;
+      if (!Array.isArray(annotations)) continue;
+      for (const annotation of annotations) {
+        const cited = annotation as { type?: unknown; url?: unknown };
+        if (
+          cited.type === "url_citation" &&
+          typeof cited.url === "string" &&
+          cited.url.startsWith("http")
+        ) {
+          return cited.url;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export interface ClosetLine {
+  id: string;
+  type: string;
+  primary_color: string;
+  formality: number;
+  warmth: number;
+  layer: string;
+  pattern: string;
+}
+
+export interface PickOutfitsInput {
+  closet: ClosetLine[];
+  weatherLine: string | null;
+  mood: string;
+  occasion: string;
+  destination: string | null;
+  dressCodeNote: string | null;
+  excludeKeys: string[];
+  retryProblems: string | null;
+}
+
+// Strict JSON schema for the outfit pick (no tools on this call).
+const OUTFIT_SCHEMA = {
+  type: "object",
+  properties: {
+    outfits: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          item_ids: { type: "array", items: { type: "string" } },
+          reason: { type: "string" },
+          weather_note: { type: "string" },
+        },
+        required: ["item_ids", "reason", "weather_note"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["outfits"],
+  additionalProperties: false,
+} as const;
+
+/**
+ * Pick 1-3 outfits from the compact closet list. No tools on this call.
+ * Returns the raw proposals; the route validates every id server-side.
+ */
+export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]> {
+  const api = getMetaClient();
+  const lines = input.closet
+    .map(
+      (c) =>
+        `${c.id} | ${c.type} | ${c.primary_color} | formality ${c.formality}/5 | warmth ${c.warmth}/5 | ${c.layer} | ${c.pattern}`,
+    )
+    .join("\n");
+  const parts = [
+    `Pick 1 to 3 outfits from this closet (never pad with filler; fewer good outfits beat three bad ones). Use ONLY these item ids, exactly as written:`,
+    lines,
+    input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
+    `Mood: ${input.mood}. Occasion: ${input.occasion}.`,
+  ];
+  if (input.destination) parts.push(`Destination: ${input.destination}.`);
+  if (input.dressCodeNote) parts.push(`Dress code to respect: ${input.dressCodeNote}`);
+  if (input.excludeKeys.length > 0) {
+    parts.push(
+      `Do NOT repeat these already-shown combinations (sorted id sets): ${input.excludeKeys.join("; ")}.`,
+    );
+  }
+  if (input.retryProblems) {
+    parts.push(`Your previous proposals were all invalid: ${input.retryProblems} Fix them.`);
+  }
+  parts.push(
+    `Each outfit must be complete: top+bottom or a dress, plus shoes if the closet has any. ` +
+      `Never use the same garment type twice except layered pieces. ` +
+      `weather_note is one line of clothing advice for the weather WITHOUT temperature numbers (numbers render separately). ` +
+      `reason is one or two sentences tying the outfit to the mood and occasion.`,
+  );
+  const res = await api.responses.create({
+    model: MODEL,
+    reasoning: { effort: "low" },
+    input: parts.join("\n"),
+    text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
+  });
+  const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
+  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
+}
+
 export async function tagGarment(
   cutoutUrl: string,
   opts?: { isPair?: boolean },
