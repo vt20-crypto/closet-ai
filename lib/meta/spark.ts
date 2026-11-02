@@ -236,10 +236,49 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
 }
 
+export interface TagResult {
+  tags: GarmentTags;
+  /**
+   * True when the tag CALL failed (network, rate-limit exhaustion, bad
+   * payload) as opposed to the model judging the cutout. Callers retry once
+   * on errored and, if it still fails, show the candidate untagged — an
+   * error must never count as a rejection.
+   */
+  errored: boolean;
+}
+
+/**
+ * Fallback tags for a candidate the tagger could never reach (kept only
+ * because the user explicitly kept it). Honest about what is unknown; the
+ * free-form type keeps it out of outfit completeness math.
+ */
+export function untaggedFallback(nouns: string[]): GarmentTags {
+  return {
+    is_single_garment: true,
+    rejection_reason: null,
+    type: nouns[0] ?? "garment",
+    primary_color: "unknown",
+    secondary_colors: [],
+    formality: 3,
+    warmth: 3,
+    layer: "base",
+    fabric_weight: "unknown",
+    pattern: "unknown",
+    seasons: [],
+    distinguishing_note: "Kept without tags; tagging failed.",
+  };
+}
+
+/**
+ * Tag one garment cutout with Spark (low reasoning effort, strict JSON).
+ * imageRef is a public URL or a data URL (small flattened JPEGs go inline).
+ * Never throws: 429s are retried with backoff from 500ms (honoring
+ * Retry-After); a 400 content_policy_violation becomes a rejection.
+ */
 export async function tagGarment(
-  cutoutUrl: string,
+  imageRef: string,
   opts?: { isPair?: boolean },
-): Promise<GarmentTags> {
+): Promise<TagResult> {
   const api = getMetaClient();
   const prompt = opts?.isPair ? BASE_PROMPT + PAIR_PROMPT : BASE_PROMPT;
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -253,19 +292,19 @@ export async function tagGarment(
             role: "user",
             content: [
               { type: "input_text", text: prompt },
-              { type: "input_image", detail: "auto", image_url: cutoutUrl },
+              { type: "input_image", detail: "auto", image_url: imageRef },
             ],
           },
         ],
         text: { format: { type: "json_schema", name: "tag", strict: true, schema: TAG_SCHEMA } },
       });
       const text = res.output_text ?? "";
-      return JSON.parse(text) as GarmentTags;
+      return { tags: JSON.parse(text) as GarmentTags, errored: false };
     } catch (err) {
       const status = (err as { status?: number })?.status;
       const message = err instanceof Error ? err.message : String(err);
       if (status === 400 && /content_policy_violation/i.test(message)) {
-        return rejected("content_policy_violation");
+        return { tags: rejected("content_policy_violation"), errored: false };
       }
       if (status === 429 && attempt < 3) {
         const headers = (err as { headers?: unknown })?.headers;
@@ -278,8 +317,8 @@ export async function tagGarment(
         await sleep(backoff);
         continue;
       }
-      return rejected(`tag_error: ${message.slice(0, 120)}`);
+      return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
     }
   }
-  return rejected("tag_retries_exhausted");
+  return { tags: rejected("tag_retries_exhausted"), errored: true };
 }

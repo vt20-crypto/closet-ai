@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { del, head } from "@vercel/blob";
+import { head } from "@vercel/blob";
 import sharp from "sharp";
 
 import { newId, putCandidatePng, saveCandidate } from "@/lib/closet";
@@ -8,6 +8,7 @@ import {
   buildUnionRaster,
   fillEnclosedHoles,
   filledAreaFraction,
+  flattenForTag,
   makeCutout,
 } from "@/lib/cutout";
 import {
@@ -65,8 +66,12 @@ export async function POST(request: Request) {
     }
 
     const tSam = performance.now();
-    const raw = await segmentGarments(bytes, mime, iw, ih);
+    const { detections: raw, allErrored } = await segmentGarments(bytes, mime, iw, ih);
     const samMs = Math.round(performance.now() - tSam);
+    if (allErrored) {
+      console.log(`segment photo=${photoPathname} sam_ms=${samMs} all_nouns_errored`);
+      return NextResponse.json({ error: "Couldn't scan, try again." }, { status: 503 });
+    }
 
     // Filter 1+2: confidence >= 0.90 AND mask area >= 2% of the image.
     const confident = raw.filter((d) => d.confidence >= MIN_CONFIDENCE);
@@ -135,7 +140,7 @@ export async function POST(request: Request) {
           const { png } = await makeCutout(bytes, iw, ih, u.box, u.raster, u.maskWidth, u.maskHeight);
           const id = newId();
           const cutoutUrl = await putCandidatePng(id, png);
-          return { ...u, id, cutoutUrl };
+          return { ...u, id, cutoutUrl, png };
         } catch {
           return null;
         }
@@ -143,28 +148,46 @@ export async function POST(request: Request) {
     );
     const cutoutMs = Math.round(performance.now() - tCutout);
 
+    // Filter 5: Spark gate. Tag the small flattened JPEG (fast); a tag-call
+    // ERROR is retried once and then kept untagged for the user to judge —
+    // never counted as a rejection. Gate rejections are kept too, shown
+    // separately with their reason; the user is the final judge.
     const tTag = performance.now();
     const tagged = await Promise.all(
       cut
         .filter((c): c is NonNullable<typeof c> => c !== null)
         .map(async (c) => {
-          const tags = await tagGarment(c.cutoutUrl, { isPair: c.isPair });
-          return { ...c, tags };
+          const t0 = performance.now();
+          let errored = true;
+          let tags = null;
+          try {
+            const flat = await flattenForTag(c.png);
+            const dataUrl = `data:image/jpeg;base64,${flat.toString("base64")}`;
+            let result = await tagGarment(dataUrl, { isPair: c.isPair });
+            if (result.errored) result = await tagGarment(dataUrl, { isPair: c.isPair });
+            tags = result.errored ? null : result.tags;
+            errored = result.errored;
+          } catch {
+            errored = true;
+          }
+          const ms = Math.round(performance.now() - t0);
+          const single = tags ? String(tags.is_single_garment) : "untagged";
+          const reason = tags?.rejection_reason?.replace(/\s+/g, " ") ?? "-";
+          console.log(`tag id=${c.id} single=${single} reason=${reason} errored=${errored} tag_ms=${ms}`);
+          return {
+            id: c.id,
+            cutoutUrl: c.cutoutUrl,
+            nouns: c.nouns,
+            confidence: c.confidence,
+            box: c.box,
+            tags,
+          };
         }),
     );
     const tagMs = Math.round(performance.now() - tTag);
 
-    // Filter 5: Spark gate. Rejects are deleted so candidates/ holds no junk.
     const candidates = [];
     for (const c of tagged) {
-      if (!c.tags.is_single_garment) {
-        try {
-          await del(c.cutoutUrl);
-        } catch {
-          // Best-effort cleanup; the orphan harms nothing.
-        }
-        continue;
-      }
       const item = {
         id: c.id,
         cutoutUrl: c.cutoutUrl,

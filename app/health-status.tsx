@@ -9,6 +9,7 @@ type State =
 
 export default function HealthStatus() {
   const [state, setState] = useState<State>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,14 +42,25 @@ export default function HealthStatus() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   return (
-    <p role="status" className="text-base">
-      {state.status === "loading" && "Checking model API…"}
-      {state.status === "ok" &&
-        `Model API: ok (${state.model}, ${state.latencyMs} ms${state.cached ? ", cached" : ""})`}
-      {state.status === "error" && `Model API: unreachable (${state.message})`}
-    </p>
+    <div className="flex flex-wrap items-center gap-3">
+      <p role="status" className="text-base">
+        {state.status === "loading" && "Checking model API…"}
+        {state.status === "ok" &&
+          `Model API: live (${state.model}, ${state.latencyMs} ms${state.cached ? ", cached" : ""})`}
+        {state.status === "error" && `Model API: unreachable (${state.message})`}
+      </p>
+      {state.status !== "loading" && (
+        <button
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          className="min-h-11 rounded-full border border-neutral-400 px-4 text-base"
+        >
+          Recheck
+        </button>
+      )}
+    </div>
   );
 }

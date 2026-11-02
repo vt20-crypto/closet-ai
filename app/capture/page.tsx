@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
+import CropEditor from "./crop-editor";
+
 const MAX_FILES = 10;
 const MAX_DIM = 1600;
 
@@ -23,11 +25,81 @@ interface Candidate {
   cutoutUrl: string;
   nouns: string[];
   confidence: number;
+  /** Null when the tag call itself errored (retried); the user judges. */
   tags: {
     type: string;
     primary_color: string;
     distinguishing_note: string;
-  };
+    is_single_garment: boolean;
+    rejection_reason: string | null;
+  } | null;
+}
+
+interface CropTarget {
+  displayUrl: string;
+  source: { kind: "file"; file: File } | { kind: "photo"; photo: Photo };
+}
+
+function candidateTitle(candidate: Candidate): string {
+  return candidate.tags?.type ?? candidate.nouns.join(" + ");
+}
+
+function candidateSubtitle(candidate: Candidate): string {
+  if (!candidate.tags) return "Tagging failed — you decide.";
+  if (!candidate.tags.is_single_garment) return candidate.tags.rejection_reason ?? "Not sure.";
+  return candidate.tags.primary_color;
+}
+
+function CandidateCard({
+  candidate,
+  keepLabel,
+  locked,
+  onKeep,
+  onDiscard,
+}: {
+  candidate: Candidate;
+  keepLabel: string;
+  locked: boolean;
+  onKeep: (id: string) => void;
+  onDiscard: (id: string) => void;
+}) {
+  const title = candidateTitle(candidate);
+  return (
+    <li className="flex gap-4 rounded-2xl border border-neutral-300 p-4 dark:border-neutral-700">
+      <div style={CHECKERBOARD} className="h-36 w-36 shrink-0 overflow-hidden rounded-xl">
+        {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
+        <img
+          src={candidate.cutoutUrl}
+          alt={candidate.tags ? `${title} in ${candidate.tags.primary_color}` : `${title} cutout`}
+          className="h-full w-full object-contain"
+        />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <p className="text-xl font-semibold capitalize">{title}</p>
+        <p className="text-lg capitalize">{candidateSubtitle(candidate)}</p>
+        <div className="mt-auto flex gap-3">
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => onKeep(candidate.id)}
+            aria-label={`${keepLabel} ${title}`}
+            className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+          >
+            {keepLabel}
+          </button>
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => onDiscard(candidate.id)}
+            aria-label={`Discard ${title}`}
+            className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+          >
+            Discard
+          </button>
+        </div>
+      </div>
+    </li>
+  );
 }
 
 const CHECKERBOARD: React.CSSProperties = {
@@ -41,8 +113,8 @@ const CHECKERBOARD: React.CSSProperties = {
   backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
 };
 
-async function resizeToJpeg(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
+async function resizeToJpeg(source: Blob): Promise<Blob> {
+  const bitmap = await createImageBitmap(source);
   const scale = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -69,6 +141,7 @@ export default function CapturePage() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [acting, setActing] = useState(false);
+  const [cropTarget, setCropTarget] = useState<CropTarget | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -130,11 +203,88 @@ export default function CapturePage() {
     }
   }
 
+  /** Upload one JPEG blob as a new photo. Returns null on failure. */
+  async function uploadSingle(jpeg: Blob, label: string): Promise<Photo | null> {
+    try {
+      const result = await upload(`photos/${Date.now()}.jpg`, jpeg, {
+        access: "public",
+        handleUploadUrl: "/api/blob/upload",
+        contentType: "image/jpeg",
+      });
+      return { url: result.url, pathname: result.pathname };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed.";
+      setStatus(`${label} failed: ${message}`);
+      return null;
+    }
+  }
+
+  /** Crop step result: null means skip (file flow proceeds, backlog closes). */
+  async function finishCrop(cropped: Blob | null) {
+    const target = cropTarget;
+    setCropTarget(null);
+    if (target) URL.revokeObjectURL(target.displayUrl);
+    if (!target) return;
+    if (target.source.kind === "file") {
+      setBusy(true);
+      try {
+        const jpeg = await resizeToJpeg(cropped ?? target.source.file);
+        const photo = await uploadSingle(jpeg, "Photo 1");
+        await refresh();
+        if (photo) await scanPhoto(photo, "photo 1 of 1");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed.";
+        setStatus(`Photo 1 failed: ${message}`);
+      } finally {
+        setBusy(false);
+        if (inputRef.current) inputRef.current.value = "";
+      }
+      return;
+    }
+    if (!cropped) {
+      setStatus("Crop skipped.");
+      return;
+    }
+    // Backlog photo: the crop becomes a NEW photo; the original stays put.
+    setBusy(true);
+    try {
+      const jpeg = await resizeToJpeg(cropped);
+      const photo = await uploadSingle(jpeg, "Cropped photo");
+      await refresh();
+      if (photo) await scanPhoto(photo, "cropped photo");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed.";
+      setStatus(`Cropped photo failed: ${message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openBacklogCrop(photo: Photo) {
+    if (busy || acting) return;
+    setStatus("Loading photo for cropping…");
+    try {
+      const blob = await (await fetch(photo.url)).blob();
+      setCropTarget({ displayUrl: URL.createObjectURL(blob), source: { kind: "photo", photo } });
+      setStatus("Drag to crop around the garment, then Use crop — or Skip.");
+    } catch {
+      setStatus("Couldn't load that photo for cropping.");
+    }
+  }
+
   async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0 || busy) return;
+    if (!files || files.length === 0 || busy || cropTarget) return;
     const batch = Array.from(files).slice(0, MAX_FILES);
     if (files.length > MAX_FILES) {
       setStatus(`Taking the first ${MAX_FILES} of ${files.length} photos.`);
+    }
+    if (batch.length === 1 && batch[0]) {
+      // Single photo: offer the optional crop step before upload.
+      const file = batch[0];
+      setCropTarget({ displayUrl: URL.createObjectURL(file), source: { kind: "file", file } });
+      setStatus("Optional: drag to crop around the garment, then Use crop — or Skip.");
+      if (inputRef.current) inputRef.current.value = "";
+      return;
     }
     setBusy(true);
     try {
@@ -143,12 +293,8 @@ export default function CapturePage() {
         setStatus(`Uploading ${index + 1} of ${batch.length}…`);
         try {
           const jpeg = await resizeToJpeg(file);
-          const result = await upload(`photos/${Date.now()}-${index}.jpg`, jpeg, {
-            access: "public",
-            handleUploadUrl: "/api/blob/upload",
-            contentType: "image/jpeg",
-          });
-          uploaded.push({ url: result.url, pathname: result.pathname });
+          const photo = await uploadSingle(jpeg, `Photo ${index + 1}`);
+          if (photo) uploaded.push(photo);
         } catch (err) {
           const message = err instanceof Error ? err.message : "Upload failed.";
           setStatus(`Photo ${index + 1} failed: ${message}`);
@@ -250,19 +396,22 @@ export default function CapturePage() {
   }
 
   async function keepAll() {
-    if (candidates.length === 0) return;
+    const acceptedIds = candidates
+      .filter((c) => !c.tags || c.tags.is_single_garment)
+      .map((c) => c.id);
+    if (acceptedIds.length === 0) return;
     setActing(true);
     try {
       const res = await fetch("/api/closet/confirm", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ candidateIds: candidates.map((c) => c.id) }),
+        body: JSON.stringify({ candidateIds: acceptedIds }),
       });
       if (!res.ok) {
         const body = (await res.json()) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      setCandidates([]);
+      setCandidates((prev) => prev.filter((c) => !acceptedIds.includes(c.id)));
       setStatus("Kept everything! View your closet.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Keep all failed.";
@@ -275,7 +424,9 @@ export default function CapturePage() {
 
   const unscanned = photos.filter((photo) => !meta[photo.pathname]);
   const scanned = photos.filter((photo) => meta[photo.pathname]);
-  const locked = busy || acting;
+  const accepted = candidates.filter((c) => !c.tags || c.tags.is_single_garment);
+  const rejected = candidates.filter((c) => c.tags && !c.tags.is_single_garment);
+  const locked = busy || acting || cropTarget !== null;
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
@@ -302,62 +453,60 @@ export default function CapturePage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
+      {cropTarget && (
+        <CropEditor
+          imageUrl={cropTarget.displayUrl}
+          onDone={(cropped) => void finishCrop(cropped)}
+        />
+      )}
       {candidates.length > 0 && (
         <section aria-label="Found garments" className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-2xl font-bold">
               Found {candidates.length} item{candidates.length === 1 ? "" : "s"}
             </h2>
-            <button
-              type="button"
-              disabled={locked}
-              onClick={() => void keepAll()}
-              className="min-h-14 rounded-2xl bg-black px-6 text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
-            >
-              Keep all
-            </button>
+            {accepted.length > 0 && (
+              <button
+                type="button"
+                disabled={locked}
+                onClick={() => void keepAll()}
+                className="min-h-14 rounded-2xl bg-black px-6 text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+              >
+                Keep all
+              </button>
+            )}
           </div>
           <ul className="grid grid-cols-1 gap-4">
-            {candidates.map((candidate) => (
-              <li
+            {accepted.map((candidate) => (
+              <CandidateCard
                 key={candidate.id}
-                className="flex gap-4 rounded-2xl border border-neutral-300 p-4 dark:border-neutral-700"
-              >
-                <div style={CHECKERBOARD} className="h-36 w-36 shrink-0 overflow-hidden rounded-xl">
-                  {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
-                  <img
-                    src={candidate.cutoutUrl}
-                    alt={`${candidate.tags.type} in ${candidate.tags.primary_color}`}
-                    className="h-full w-full object-contain"
-                  />
-                </div>
-                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                  <p className="text-xl font-semibold capitalize">{candidate.tags.type}</p>
-                  <p className="text-lg capitalize">{candidate.tags.primary_color}</p>
-                  <div className="mt-auto flex gap-3">
-                    <button
-                      type="button"
-                      disabled={locked}
-                      onClick={() => void keep(candidate.id)}
-                      aria-label={`Keep ${candidate.tags.type}`}
-                      className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
-                    >
-                      Keep
-                    </button>
-                    <button
-                      type="button"
-                      disabled={locked}
-                      onClick={() => void discard(candidate.id)}
-                      aria-label={`Discard ${candidate.tags.type}`}
-                      className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
-                    >
-                      Discard
-                    </button>
-                  </div>
-                </div>
-              </li>
+                candidate={candidate}
+                keepLabel="Keep"
+                locked={locked}
+                onKeep={(id) => void keep(id)}
+                onDiscard={(id) => void discard(id)}
+              />
             ))}
           </ul>
+          {rejected.length > 0 && (
+            <details>
+              <summary className="min-h-14 cursor-pointer py-4 text-lg underline">
+                Not sure these are clothes ({rejected.length})
+              </summary>
+              <ul className="grid grid-cols-1 gap-4">
+                {rejected.map((candidate) => (
+                  <CandidateCard
+                    key={candidate.id}
+                    candidate={candidate}
+                    keepLabel="Keep anyway"
+                    locked={locked}
+                    onKeep={(id) => void keep(id)}
+                    onDiscard={(id) => void discard(id)}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
         </section>
       )}
       <section aria-label="Not scanned yet" className="flex flex-col gap-4">
@@ -399,6 +548,15 @@ export default function CapturePage() {
                   className="min-h-14 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
                 >
                   Find clothes
+                </button>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void openBacklogCrop(photo)}
+                  aria-label={`Crop unscanned photo ${index + 1}`}
+                  className="min-h-14 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                >
+                  Crop
                 </button>
                 <button
                   type="button"

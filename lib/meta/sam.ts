@@ -99,7 +99,8 @@ function sleep(ms: number): Promise<void> {
 
 function retryAfterMs(err: unknown, attempt: number): number | null {
   const status = (err as { status?: number })?.status;
-  if (status !== 429) return null;
+  const retryable = status === 429 || (typeof status === "number" && status >= 500);
+  if (!retryable) return null;
   const raw = (err as { headers?: unknown })?.headers;
   const get = (name: string): string | null => {
     if (!raw) return null;
@@ -134,6 +135,25 @@ function mimeFor(bytes: Buffer, url: string): string {
   return "image/jpeg";
 }
 
+export interface NounResult {
+  noun: string;
+  status: "ok" | "error";
+  /** Short error code (HTTP status or failure kind). Absent on success. */
+  code?: string;
+  masks: number;
+  detections: GarmentDetection[];
+}
+
+function errorCode(err: unknown): string {
+  const status = (err as { status?: number })?.status;
+  if (typeof status === "number") {
+    const message = err instanceof Error ? err.message : "";
+    const policy = /content_policy_violation/i.test(message) ? " content_policy_violation" : "";
+    return `${status}${policy}`;
+  }
+  return err instanceof Error ? err.name : "unknown";
+}
+
 /** Segment one image (already fetched) for one noun. Never throws. */
 export async function segmentBytes(
   bytes: Buffer,
@@ -141,8 +161,15 @@ export async function segmentBytes(
   noun: string,
   imageWidth: number,
   imageHeight: number,
-): Promise<GarmentDetection[]> {
+): Promise<NounResult> {
   const api = getMetaClient();
+  const failure = (err: unknown): NounResult => ({
+    noun,
+    status: "error",
+    code: errorCode(err),
+    masks: 0,
+    detections: [],
+  });
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
       const stream = await api.responses.create({
@@ -167,7 +194,9 @@ export async function segmentBytes(
       const result = await parseImageStream(
         normalizedEvents(stream as unknown as AsyncIterable<unknown>) as never,
       ).finalResult;
-      if (result.outcome.status !== "completed") return [];
+      if (result.outcome.status !== "completed") {
+        return { noun, status: "error", code: `outcome_${result.outcome.status}`, masks: 0, detections: [] };
+      }
       const boxes = recordsOfKind(result.records, "box");
       const masks = recordsOfKind(result.records, "mask");
       const out: GarmentDetection[] = [];
@@ -188,20 +217,20 @@ export async function segmentBytes(
         const confidence = m.confidence ?? paired?.confidence ?? 0;
         out.push({ noun, box, confidence, mask: m.mask });
       }
-      return out;
+      return { noun, status: "ok", masks: masks.length, detections: out };
     } catch (err) {
       const status = (err as { status?: number })?.status;
-      // The model declines some images; that is a filter signal, not an error.
-      if (status === 400) return [];
+      // The model declines some images; a 400 is final, not worth retrying.
+      if (status === 400) return failure(err);
       const backoff = retryAfterMs(err, attempt);
       if (backoff !== null && attempt < 3) {
         await sleep(backoff);
         continue;
       }
-      return [];
+      return failure(err);
     }
   }
-  return [];
+  return { noun, status: "error", code: "retries_exhausted", masks: 0, detections: [] };
 }
 
 /** Fetch a photo URL to bytes. Throws on network failure. */
@@ -217,10 +246,17 @@ export async function fetchPhoto(photoUrl: string): Promise<{ bytes: Buffer; mim
   return { bytes, mime };
 }
 
+export interface GarmentSegmentation {
+  detections: GarmentDetection[];
+  results: NounResult[];
+  /** True when every noun call errored: the scan tells the user to retry. */
+  allErrored: boolean;
+}
+
 /**
- * Run all garment nouns for one photo IN PARALLEL (spike 06: 35 parallel
- * requests finished in ~4.2s wall-clock). Per-noun failures yield no
- * detections for that noun; the whole call never throws for API errors.
+ * Run garment nouns with capped concurrency (5 at a time: 14 at once
+ * trips rate limits). Per-noun status is logged by the caller-visible
+ * results; the whole call never throws for API errors.
  */
 export async function segmentGarments(
   bytes: Buffer,
@@ -228,11 +264,36 @@ export async function segmentGarments(
   imageWidth: number,
   imageHeight: number,
   nouns: readonly string[] = GARMENT_NOUNS,
-): Promise<GarmentDetection[]> {
-  const settled = await Promise.all(
-    nouns.map((noun) => segmentBytes(bytes, mime, noun, imageWidth, imageHeight)),
+  concurrency = 5,
+): Promise<GarmentSegmentation> {
+  const results: NounResult[] = new Array(nouns.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(concurrency, nouns.length)) },
+    async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= nouns.length) return;
+        const noun = nouns[index] as string;
+        const t0 = performance.now();
+        const result = await segmentBytes(bytes, mime, noun, imageWidth, imageHeight);
+        results[index] = result;
+        const ms = Math.round(performance.now() - t0);
+        console.log(
+          `sam noun=${noun} status=${result.status}` +
+            (result.code ? ` code=${result.code}` : "") +
+            ` masks=${result.masks} latency_ms=${ms}`,
+        );
+      }
+    },
   );
-  return settled.flat();
+  await Promise.all(workers);
+  return {
+    detections: results.flatMap((r) => r.detections),
+    results,
+    allErrored: results.length > 0 && results.every((r) => r.status === "error"),
+  };
 }
 
 /** Validate that a decoded raster only contains 0/1 values. */

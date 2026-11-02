@@ -60,6 +60,8 @@ export async function savePhotoMeta(meta: PhotoMeta): Promise<void> {
     access: "public",
     contentType: "application/json",
     addRandomSuffix: false,
+    // Rescans rewrite the same meta path; items/ is never overwritten.
+    allowOverwrite: true,
   });
 }
 

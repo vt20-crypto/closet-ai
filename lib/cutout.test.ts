@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildUnionRaster, fillEnclosedHoles, sampleMask } from "./cutout.ts";
+import sharp from "sharp";
+
+import { buildUnionRaster, fillEnclosedHoles, flattenForTag, sampleMask } from "./cutout.ts";
 
 function render(raster: Uint8Array, w: number): string[] {
   const rows: string[] = [];
@@ -89,6 +91,33 @@ test("buildUnionRaster unions two side-by-side masks", () => {
       assert.equal(out[y * 10 + x], expected, `pixel (${x},${y})`);
     }
   }
+});
+
+test("flattenForTag shrinks to 768px and outputs JPEG", async () => {
+  const big = await sharp({
+    create: { width: 1600, height: 1200, channels: 4, background: { r: 200, g: 30, b: 30, alpha: 0.5 } },
+  })
+    .png()
+    .toBuffer();
+  const flat = await flattenForTag(big);
+  assert.equal(flat[0], 0xff);
+  assert.equal(flat[1], 0xd8);
+  const meta = await sharp(flat).metadata();
+  assert.ok((meta.width ?? 0) <= 768 && (meta.height ?? 0) <= 768);
+  assert.equal(meta.width, 768);
+  assert.equal(meta.height, 576);
+});
+
+test("flattenForTag never enlarges small cutouts", async () => {
+  const small = await sharp({
+    create: { width: 100, height: 80, channels: 4, background: { r: 30, g: 30, b: 200, alpha: 1 } },
+  })
+    .png()
+    .toBuffer();
+  const flat = await flattenForTag(small);
+  const meta = await sharp(flat).metadata();
+  assert.equal(meta.width, 100);
+  assert.equal(meta.height, 80);
 });
 
 test("sampleMask maps image pixels into the box", () => {
