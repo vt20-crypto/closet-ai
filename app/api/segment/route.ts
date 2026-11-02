@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { del } from "@vercel/blob";
+import { del, head } from "@vercel/blob";
 import sharp from "sharp";
 
 import { newId, putCandidatePng, saveCandidate } from "@/lib/closet";
+import { isPhotoPathname, recordScan } from "@/lib/photos";
 import {
   buildUnionRaster,
   fillEnclosedHoles,
@@ -35,12 +36,24 @@ interface KeptUnit {
 
 export async function POST(request: Request) {
   const tAll = performance.now();
-  let photoUrl = "";
+  let photoPathname = "";
   try {
-    const body = (await request.json()) as { photoUrl?: unknown };
-    photoUrl = typeof body.photoUrl === "string" ? body.photoUrl : "";
-    if (!photoUrl.startsWith("https://")) {
-      return NextResponse.json({ error: "photoUrl must be an https URL." }, { status: 400 });
+    const body = (await request.json()) as { photoPathname?: unknown };
+    photoPathname = typeof body.photoPathname === "string" ? body.photoPathname : "";
+    if (!isPhotoPathname(photoPathname)) {
+      return NextResponse.json(
+        { error: "photoPathname must be a photo in our own store (photos/...)." },
+        { status: 400 },
+      );
+    }
+
+    // Resolve the photo inside our own Blob store; never fetch arbitrary URLs.
+    let photoUrl: string;
+    try {
+      const found = await head(photoPathname);
+      photoUrl = found.url;
+    } catch {
+      return NextResponse.json({ error: "Photo not found in our store." }, { status: 404 });
     }
 
     const { bytes, mime } = await fetchPhoto(photoUrl);
@@ -160,23 +173,37 @@ export async function POST(request: Request) {
         box: c.box,
         tags: c.tags,
         photoUrl,
+        photoPathname,
         createdAt: new Date().toISOString(),
       };
       await saveCandidate(item);
       candidates.push(item);
     }
 
+    const scanMeta = await recordScan(
+      photoPathname,
+      candidates.map((c) => c.id),
+    );
+
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
-      `segment photo=${photoUrl.slice(0, 80)} sam_ms=${samMs} cutout_ms=${cutoutMs} ` +
+      `segment photo=${photoPathname} sam_ms=${samMs} cutout_ms=${cutoutMs} ` +
         `tag_ms=${tagMs} total_ms=${totalMs} raw=${raw.length} ` +
         `confident=${confident.length} area=${withArea.length} units=${units.length} ` +
         `candidates=${candidates.length}`,
     );
-    return NextResponse.json({ candidates });
+    return NextResponse.json({
+      candidates,
+      photo: {
+        pathname: photoPathname,
+        scannedAt: scanMeta.scannedAt,
+        candidateCount: scanMeta.candidateIds.length,
+        keptCount: scanMeta.keptIds.length,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Segmentation failed.";
-    console.log(`segment photo=${photoUrl.slice(0, 80)} ERROR ${message.slice(0, 160)}`);
+    console.log(`segment photo=${photoPathname || "?"} ERROR ${message.slice(0, 160)}`);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

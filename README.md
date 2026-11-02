@@ -16,6 +16,7 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 
 - 2026-10-30: foundation — Next.js scaffold, `/api/health` (Spark), `/capture` photo upload to Vercel Blob, home page.
 - 2026-11-02: capture pipeline — photo → SAM 3.1 cutouts (14 nouns in parallel) → confidence ≥ 0.90 + area ≥ 2% + cross-noun IoU dedupe + footwear-pair merge → Spark tags + `is_single_garment` gate → Keep/Discard confirm into per-item Blob storage (`items/`, `candidates/`) → `/closet` grid grouped by type.
+- 2026-11-02: unscanned-photo backlog — `/capture` splits photos into "Not scanned yet" / "Scanned" with per-photo "Find clothes", "Scan all" (sequential), "Scan again", and photo delete; `/api/segment` takes a `photoPathname` in our own `photos/` store only (no arbitrary URLs); per-photo scan records in `photos-meta/` track `{ scannedAt, candidateIds, keptIds }`.
 
 ## Third-party code
 

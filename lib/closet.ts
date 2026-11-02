@@ -20,6 +20,8 @@ export interface ClosetItem {
   box: ClosetBox;
   tags: GarmentTags;
   photoUrl: string;
+  /** Blob pathname of the source photo (absent on pre-scan-pipeline items). */
+  photoPathname?: string;
   createdAt: string;
 }
 

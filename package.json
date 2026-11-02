@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test lib/cutout.test.ts lib/filters.test.ts"
+    "test": "node --test lib/cutout.test.ts lib/filters.test.ts lib/photoPaths.test.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",

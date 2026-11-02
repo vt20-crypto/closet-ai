@@ -11,6 +11,13 @@ interface Photo {
   pathname: string;
 }
 
+interface PhotoMeta {
+  photoPathname: string;
+  scannedAt: string;
+  candidateIds: string[];
+  keptIds: string[];
+}
+
 interface Candidate {
   id: string;
   cutoutUrl: string;
@@ -58,6 +65,7 @@ export default function CapturePage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("No photos yet. Add clothes to start your closet.");
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [meta, setMeta] = useState<Record<string, PhotoMeta>>({});
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [acting, setActing] = useState(false);
@@ -65,13 +73,13 @@ export default function CapturePage() {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/photos", { cache: "no-store" });
-      const body = (await res.json()) as { photos?: Photo[]; error?: string };
-      if (body.photos) {
-        setPhotos(body.photos);
-        if (body.photos.length > 0) setStatus(`Closet has ${body.photos.length} photo(s).`);
-      }
+      const body = (await res.json()) as { photos?: Photo[]; meta?: Record<string, PhotoMeta> };
+      if (body.photos) setPhotos(body.photos);
+      if (body.meta) setMeta(body.meta);
+      return body;
     } catch {
       // Listing is best-effort here; upload errors are reported per file below.
+      return null;
     }
   }, []);
 
@@ -79,10 +87,11 @@ export default function CapturePage() {
     let cancelled = false;
     fetch("/api/photos", { cache: "no-store" })
       .then(async (res) => {
-        const body = (await res.json()) as { photos?: Photo[] };
-        if (!cancelled && body.photos) {
-          setPhotos(body.photos);
-          if (body.photos.length > 0) setStatus(`Closet has ${body.photos.length} photo(s).`);
+        const body = (await res.json()) as { photos?: Photo[]; meta?: Record<string, PhotoMeta> };
+        if (!cancelled) {
+          if (body.photos) setPhotos(body.photos);
+          if (body.meta) setMeta(body.meta);
+          if (body.photos?.length) setStatus(`Closet has ${body.photos.length} photo(s).`);
         }
       })
       .catch(() => {
@@ -92,6 +101,34 @@ export default function CapturePage() {
       cancelled = true;
     };
   }, []);
+
+  /** Segment one photo by its Blob pathname; returns how many candidates were found. */
+  async function scanPhoto(photo: Photo, label: string): Promise<number> {
+    setStatus(`Finding clothes in ${label}…`);
+    try {
+      const res = await fetch("/api/segment", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ photoPathname: photo.pathname }),
+      });
+      const body = (await res.json()) as { candidates?: Candidate[]; error?: string };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      const fresh = body.candidates ?? [];
+      if (fresh.length > 0) setCandidates((prev) => [...fresh, ...prev]);
+      setStatus(
+        fresh.length > 0
+          ? `Found ${fresh.length} item${fresh.length === 1 ? "" : "s"} in ${label}.`
+          : `No garments found in ${label}. Try a plainer background and better light.`,
+      );
+      await refresh();
+      return fresh.length;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Segmentation failed.";
+      setStatus(`${label} failed: ${message}`);
+      await refresh();
+      return 0;
+    }
+  }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0 || busy) return;
@@ -119,41 +156,55 @@ export default function CapturePage() {
       }
       await refresh();
 
-      // Segment one photo at a time, sequentially.
-      let found = 0;
+      // New uploads flow straight into segment, one photo at a time.
       for (const [index, photo] of uploaded.entries()) {
-        setStatus(`Finding clothes in photo ${index + 1} of ${uploaded.length}…`);
-        try {
-          const res = await fetch("/api/segment", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ photoUrl: photo.url }),
-          });
-          const body = (await res.json()) as { candidates?: Candidate[]; error?: string };
-          if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
-          const fresh = body.candidates ?? [];
-          found += fresh.length;
-          if (fresh.length > 0) setCandidates((prev) => [...fresh, ...prev]);
-          setStatus(
-            fresh.length > 0
-              ? `Found ${found} item${found === 1 ? "" : "s"} so far.`
-              : `Found ${found} item${found === 1 ? "" : "s"} so far — photo ${index + 1} had nothing new.`,
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Segmentation failed.";
-          setStatus(`Photo ${index + 1} failed: ${message}`);
-        }
-      }
-      if (uploaded.length > 0) {
-        setStatus(
-          found > 0
-            ? `Found ${found} item${found === 1 ? "" : "s"}. Tap Keep to add them to your closet.`
-            : "No garments found. Try a plainer background and better light.",
-        );
+        await scanPhoto(photo, `photo ${index + 1} of ${uploaded.length}`);
       }
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  async function scanAll() {
+    const pending = photos.filter((photo) => !meta[photo.pathname]);
+    if (pending.length === 0 || busy) return;
+    setBusy(true);
+    try {
+      let found = 0;
+      for (const [index, photo] of pending.entries()) {
+        found += await scanPhoto(photo, `photo ${index + 1} of ${pending.length}`);
+      }
+      if (found > 0) setStatus(`Scan all done. Tap Keep to add items to your closet.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removePhoto(photo: Photo) {
+    setActing(true);
+    try {
+      const res = await fetch("/api/photos", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pathname: photo.pathname }),
+      });
+      if (!res.ok) {
+        const body = (await res.json()) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      setPhotos((prev) => prev.filter((p) => p.pathname !== photo.pathname));
+      setMeta((prev) => {
+        const next = { ...prev };
+        delete next[photo.pathname];
+        return next;
+      });
+      setStatus("Deleted photo. Kept closet items are untouched.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Delete failed.";
+      setStatus(`Delete failed: ${message}`);
+    } finally {
+      setActing(false);
     }
   }
 
@@ -177,6 +228,7 @@ export default function CapturePage() {
     } finally {
       setActing(false);
     }
+    await refresh();
   }
 
   async function discard(id: string) {
@@ -218,7 +270,12 @@ export default function CapturePage() {
     } finally {
       setActing(false);
     }
+    await refresh();
   }
+
+  const unscanned = photos.filter((photo) => !meta[photo.pathname]);
+  const scanned = photos.filter((photo) => meta[photo.pathname]);
+  const locked = busy || acting;
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
@@ -253,7 +310,7 @@ export default function CapturePage() {
             </h2>
             <button
               type="button"
-              disabled={acting || busy}
+              disabled={locked}
               onClick={() => void keepAll()}
               className="min-h-14 rounded-2xl bg-black px-6 text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
             >
@@ -280,7 +337,7 @@ export default function CapturePage() {
                   <div className="mt-auto flex gap-3">
                     <button
                       type="button"
-                      disabled={acting || busy}
+                      disabled={locked}
                       onClick={() => void keep(candidate.id)}
                       aria-label={`Keep ${candidate.tags.type}`}
                       className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
@@ -289,7 +346,7 @@ export default function CapturePage() {
                     </button>
                     <button
                       type="button"
-                      disabled={acting || busy}
+                      disabled={locked}
                       onClick={() => void discard(candidate.id)}
                       aria-label={`Discard ${candidate.tags.type}`}
                       className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
@@ -303,14 +360,105 @@ export default function CapturePage() {
           </ul>
         </section>
       )}
-      {photos.length > 0 && (
-        <ul className="grid grid-cols-2 gap-4" aria-label="Uploaded closet photos">
-          {photos.map((photo, index) => (
-            <li key={photo.pathname} className="overflow-hidden rounded-xl">
-              <img src={photo.url} alt={`Closet photo ${index + 1}`} loading="lazy" className="w-full" />
-            </li>
-          ))}
-        </ul>
+      <section aria-label="Not scanned yet" className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-2xl font-bold">
+            Not scanned yet ({unscanned.length})
+          </h2>
+          {unscanned.length > 0 && (
+            <button
+              type="button"
+              disabled={locked}
+              onClick={() => void scanAll()}
+              className="min-h-14 rounded-2xl bg-black px-6 text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+            >
+              Scan all
+            </button>
+          )}
+        </div>
+        {unscanned.length > 0 && (
+          <ul className="grid grid-cols-2 gap-4">
+            {unscanned.map((photo, index) => (
+              <li
+                key={photo.pathname}
+                className="flex flex-col gap-2 rounded-2xl border border-neutral-300 p-3 dark:border-neutral-700"
+              >
+                <img
+                  src={photo.url}
+                  alt={`Unscanned closet photo ${index + 1}`}
+                  loading="lazy"
+                  className="w-full rounded-xl"
+                />
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => {
+                    setBusy(true);
+                    void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
+                  }}
+                  className="min-h-14 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  Find clothes
+                </button>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void removePhoto(photo)}
+                  aria-label={`Delete unscanned photo ${index + 1}`}
+                  className="min-h-14 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {scanned.length > 0 && (
+        <section aria-label="Scanned photos" className="flex flex-col gap-4">
+          <h2 className="text-2xl font-bold">Scanned ({scanned.length})</h2>
+          <ul className="grid grid-cols-2 gap-4">
+            {scanned.map((photo, index) => {
+              const kept = meta[photo.pathname]?.keptIds.length ?? 0;
+              return (
+                <li
+                  key={photo.pathname}
+                  className="flex flex-col gap-2 rounded-2xl border border-neutral-300 p-3 dark:border-neutral-700"
+                >
+                  <img
+                    src={photo.url}
+                    alt={`Scanned closet photo ${index + 1}`}
+                    loading="lazy"
+                    className="w-full rounded-xl"
+                  />
+                  <p className="text-lg">
+                    {kept === 0 ? "No items kept yet." : `${kept} item${kept === 1 ? "" : "s"} kept.`}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={locked}
+                    onClick={() => {
+                      setBusy(true);
+                      void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
+                    }}
+                    className="min-h-14 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                  >
+                    Scan again
+                  </button>
+                  <button
+                    type="button"
+                    disabled={locked}
+                    onClick={() => void removePhoto(photo)}
+                    aria-label={`Delete scanned photo ${index + 1}`}
+                    className="min-h-14 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </main>
   );
