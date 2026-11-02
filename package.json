@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test lib/cutout.test.ts lib/filters.test.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",

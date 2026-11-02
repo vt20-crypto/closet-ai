@@ -13,6 +13,12 @@ export default function Home() {
       >
         Add clothes
       </Link>
+      <Link
+        href="/closet"
+        className="inline-block min-h-14 rounded-2xl border border-neutral-400 px-6 py-4 text-center text-xl font-semibold"
+      >
+        View closet
+      </Link>
       <HealthStatus />
     </main>
   );
