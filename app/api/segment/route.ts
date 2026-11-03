@@ -19,7 +19,7 @@ import {
   type FilterBox,
 } from "@/lib/filters";
 import { decodeRaster, fetchPhoto, segmentGarments } from "@/lib/meta/sam";
-import { tagGarment } from "@/lib/meta/spark";
+import { tagGarment, type GarmentTags } from "@/lib/meta/spark";
 
 // Spike 01 saw a ~42s cold SAM call; 14 parallel nouns need headroom.
 export const maxDuration = 120;
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   const tAll = performance.now();
   let photoPathname = "";
   try {
-    const body = (await request.json()) as { photoPathname?: unknown };
+    const body = (await request.json()) as { photoPathname?: unknown; parentPhoto?: unknown };
     photoPathname = typeof body.photoPathname === "string" ? body.photoPathname : "";
     if (!isPhotoPathname(photoPathname)) {
       return NextResponse.json(
@@ -47,6 +47,10 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    const parentPhoto =
+      typeof body.parentPhoto === "string" && isPhotoPathname(body.parentPhoto)
+        ? body.parentPhoto
+        : undefined;
 
     // Resolve the photo inside our own Blob store; never fetch arbitrary URLs.
     let photoUrl: string;
@@ -133,96 +137,104 @@ export async function POST(request: Request) {
       }),
     ];
 
-    const tCutout = performance.now();
-    const cut = await Promise.all(
-      units.map(async (u) => {
+    // Progressive NDJSON stream: each cutout is sent the moment its PNG
+    // is ready (the card shows "Tagging…"), then its tag event fills in
+    // type/color. Rejections and untagged errors are kept for the user.
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (obj: unknown) => {
+          controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
+        };
         try {
-          const { png } = await makeCutout(bytes, iw, ih, u.box, u.raster, u.maskWidth, u.maskHeight);
-          const id = newId();
-          const cutoutUrl = await putCandidatePng(id, png);
-          return { ...u, id, cutoutUrl, png };
-        } catch {
-          return null;
-        }
-      }),
-    );
-    const cutoutMs = Math.round(performance.now() - tCutout);
-
-    // Filter 5: Spark gate. Tag the small flattened JPEG (fast); a tag-call
-    // ERROR is retried once and then kept untagged for the user to judge —
-    // never counted as a rejection. Gate rejections are kept too, shown
-    // separately with their reason; the user is the final judge.
-    const tTag = performance.now();
-    const tagged = await Promise.all(
-      cut
-        .filter((c): c is NonNullable<typeof c> => c !== null)
-        .map(async (c) => {
-          const t0 = performance.now();
-          let errored = true;
-          let tags = null;
-          try {
-            const flat = await flattenForTag(c.png);
-            const dataUrl = `data:image/jpeg;base64,${flat.toString("base64")}`;
-            let result = await tagGarment(dataUrl, { isPair: c.isPair });
-            if (result.errored) result = await tagGarment(dataUrl, { isPair: c.isPair });
-            tags = result.errored ? null : result.tags;
-            errored = result.errored;
-          } catch {
-            errored = true;
+          const saved: {
+            id: string;
+            cutoutUrl: string;
+            nouns: string[];
+            confidence: number;
+            box: FilterBox;
+            tags: GarmentTags | null;
+          }[] = [];
+          await Promise.all(
+            units.map(async (u) => {
+              let cutout: { id: string; cutoutUrl: string; png: Buffer } | null = null;
+              try {
+                const { png } = await makeCutout(bytes, iw, ih, u.box, u.raster, u.maskWidth, u.maskHeight);
+                const id = newId();
+                const cutoutUrl = await putCandidatePng(id, png);
+                cutout = { id, cutoutUrl, png };
+                send({
+                  event: "cutout",
+                  candidate: { id, cutoutUrl, nouns: u.nouns, confidence: u.confidence, photoPathname },
+                });
+              } catch {
+                return;
+              }
+              // Filter 5: Spark gate on the small flattened JPEG. A tag-call
+              // ERROR is retried once, then kept untagged — never a rejection.
+              const t0 = performance.now();
+              let errored = true;
+              let tags: GarmentTags | null = null;
+              try {
+                const flat = await flattenForTag(cutout.png);
+                const dataUrl = `data:image/jpeg;base64,${flat.toString("base64")}`;
+                let result = await tagGarment(dataUrl, { isPair: u.isPair });
+                if (result.errored) result = await tagGarment(dataUrl, { isPair: u.isPair });
+                tags = result.errored ? null : result.tags;
+                errored = result.errored;
+              } catch {
+                errored = true;
+              }
+              const ms = Math.round(performance.now() - t0);
+              const single = tags ? String(tags.is_single_garment) : "untagged";
+              const reason = tags?.rejection_reason?.replace(/\s+/g, " ") ?? "-";
+              console.log(`tag id=${cutout.id} single=${single} reason=${reason} errored=${errored} tag_ms=${ms}`);
+              saved.push({
+                id: cutout.id,
+                cutoutUrl: cutout.cutoutUrl,
+                nouns: u.nouns,
+                confidence: u.confidence,
+                box: u.box,
+                tags,
+              });
+              send({ event: "tag", id: cutout.id, tags });
+            }),
+          );
+          const createdAt = new Date().toISOString();
+          for (const c of saved) {
+            await saveCandidate({ ...c, photoUrl, photoPathname, createdAt });
           }
-          const ms = Math.round(performance.now() - t0);
-          const single = tags ? String(tags.is_single_garment) : "untagged";
-          const reason = tags?.rejection_reason?.replace(/\s+/g, " ") ?? "-";
-          console.log(`tag id=${c.id} single=${single} reason=${reason} errored=${errored} tag_ms=${ms}`);
-          return {
-            id: c.id,
-            cutoutUrl: c.cutoutUrl,
-            nouns: c.nouns,
-            confidence: c.confidence,
-            box: c.box,
-            tags,
-          };
-        }),
-    );
-    const tagMs = Math.round(performance.now() - tTag);
-
-    const candidates = [];
-    for (const c of tagged) {
-      const item = {
-        id: c.id,
-        cutoutUrl: c.cutoutUrl,
-        nouns: c.nouns,
-        confidence: c.confidence,
-        box: c.box,
-        tags: c.tags,
-        photoUrl,
-        photoPathname,
-        createdAt: new Date().toISOString(),
-      };
-      await saveCandidate(item);
-      candidates.push(item);
-    }
-
-    const scanMeta = await recordScan(
-      photoPathname,
-      candidates.map((c) => c.id),
-    );
-
-    const totalMs = Math.round(performance.now() - tAll);
-    console.log(
-      `segment photo=${photoPathname} sam_ms=${samMs} cutout_ms=${cutoutMs} ` +
-        `tag_ms=${tagMs} total_ms=${totalMs} raw=${raw.length} ` +
-        `confident=${confident.length} area=${withArea.length} units=${units.length} ` +
-        `candidates=${candidates.length}`,
-    );
-    return NextResponse.json({
-      candidates,
-      photo: {
-        pathname: photoPathname,
-        scannedAt: scanMeta.scannedAt,
-        candidateCount: scanMeta.candidateIds.length,
-        keptCount: scanMeta.keptIds.length,
+          const scanMeta = await recordScan(
+            photoPathname,
+            saved.map((c) => c.id),
+            parentPhoto,
+          );
+          const totalMs = Math.round(performance.now() - tAll);
+          console.log(
+            `segment photo=${photoPathname} sam_ms=${samMs} total_ms=${totalMs} raw=${raw.length} ` +
+              `confident=${confident.length} area=${withArea.length} units=${units.length} ` +
+              `candidates=${saved.length}`,
+          );
+          send({
+            event: "done",
+            photo: {
+              pathname: photoPathname,
+              scannedAt: scanMeta.scannedAt,
+              candidateCount: scanMeta.candidateIds.length,
+              keptCount: scanMeta.keptIds.length,
+            },
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Segmentation failed.";
+          console.log(`segment photo=${photoPathname} ERROR ${message.slice(0, 160)}`);
+          send({ event: "error", error: "Scan incomplete." });
+        } finally {
+          controller.close();
+        }
       },
+    });
+    return new Response(stream, {
+      headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Segmentation failed.";

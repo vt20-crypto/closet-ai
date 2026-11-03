@@ -295,9 +295,12 @@ export async function tagGarment(
   let retriesBackoff = 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
+      // "minimal" is the shortest documented reasoning pass
+      // (dev.meta.ai/docs/reasoning); "none" 400s on Spark. Tagging is a
+      // narrow classification call, so it gets the cheapest effort.
       const res = await api.responses.create({
         model: MODEL,
-        reasoning: { effort: "low" },
+        reasoning: { effort: "minimal" },
         input: [
           {
             type: "message",

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { del, list } from "@vercel/blob";
 
 import {
+  deletePhotoFamily,
   deletePhotoMeta,
   isPhotoPathname,
   listPhotoMeta,
@@ -31,12 +32,16 @@ export async function GET() {
  */
 export async function DELETE(request: Request) {
   try {
-    const body = (await request.json()) as { pathname?: unknown };
+    const body = (await request.json()) as { pathname?: unknown; deleteFamily?: unknown };
     if (!isPhotoPathname(body.pathname)) {
       return NextResponse.json(
         { error: "pathname must be a photo in our own store (photos/...)." },
         { status: 400 },
       );
+    }
+    if (body.deleteFamily === true) {
+      const deleted = await deletePhotoFamily(body.pathname);
+      return NextResponse.json({ deleted });
     }
     await del(body.pathname);
     try {

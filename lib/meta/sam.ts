@@ -276,7 +276,7 @@ export async function segmentGarments(
   imageWidth: number,
   imageHeight: number,
   nouns: readonly string[] = GARMENT_NOUNS,
-  concurrency = 5,
+  concurrency = 14,
 ): Promise<GarmentSegmentation> {
   const results: NounResult[] = new Array(nouns.length);
   let next = 0;
@@ -292,10 +292,11 @@ export async function segmentGarments(
         const result = await segmentBytes(bytes, mime, noun, imageWidth, imageHeight);
         results[index] = result;
         const ms = Math.round(performance.now() - t0);
+        const conf = result.detections.map((d) => d.confidence.toFixed(2)).join(",");
         console.log(
           `sam noun=${noun} status=${result.status}` +
             (result.code ? ` code=${result.code}` : "") +
-            ` masks=${result.masks} latency_ms=${ms}`,
+            ` masks=${result.masks} conf=[${conf}] latency_ms=${ms}`,
         );
       }
     },

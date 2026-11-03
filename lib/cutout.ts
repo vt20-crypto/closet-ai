@@ -130,13 +130,13 @@ export interface CutoutResult {
 
 /**
  * Flatten a transparent cutout PNG onto a light background and shrink it to
- * at most 768px on the long side for the tagger: small JPEGs tag faster
+ * at most 512px on the long side for the tagger: small JPEGs tag faster
  * than multi-megapixel PNGs. Never enlarges small cutouts.
  */
 export async function flattenForTag(png: Buffer, background = "#f5f5f5"): Promise<Buffer> {
   return sharp(png)
     .flatten({ background })
-    .resize({ width: 768, height: 768, fit: "inside", withoutEnlargement: true })
+    .resize({ width: 512, height: 512, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 80 })
     .toBuffer();
 }

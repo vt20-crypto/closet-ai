@@ -18,7 +18,7 @@ export interface FilterDetection {
   confidence: number;
 }
 
-export const MIN_CONFIDENCE = 0.9;
+export const MIN_CONFIDENCE = 0.6;
 export const MIN_AREA_FRACTION = 0.02;
 export const DEDUPE_IOU = 0.6;
 

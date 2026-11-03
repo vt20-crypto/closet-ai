@@ -93,7 +93,7 @@ test("buildUnionRaster unions two side-by-side masks", () => {
   }
 });
 
-test("flattenForTag shrinks to 768px and outputs JPEG", async () => {
+test("flattenForTag shrinks to 512px and outputs JPEG", async () => {
   const big = await sharp({
     create: { width: 1600, height: 1200, channels: 4, background: { r: 200, g: 30, b: 30, alpha: 0.5 } },
   })
@@ -103,9 +103,9 @@ test("flattenForTag shrinks to 768px and outputs JPEG", async () => {
   assert.equal(flat[0], 0xff);
   assert.equal(flat[1], 0xd8);
   const meta = await sharp(flat).metadata();
-  assert.ok((meta.width ?? 0) <= 768 && (meta.height ?? 0) <= 768);
-  assert.equal(meta.width, 768);
-  assert.equal(meta.height, 576);
+  assert.ok((meta.width ?? 0) <= 512 && (meta.height ?? 0) <= 512);
+  assert.equal(meta.width, 512);
+  assert.equal(meta.height, 384);
 });
 
 test("flattenForTag never enlarges small cutouts", async () => {

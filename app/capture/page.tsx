@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
 import CropEditor from "./crop-editor";
+import { createNDJSONParser } from "@/lib/ndjson";
 
 const MAX_FILES = 10;
 const MAX_DIM = 1600;
@@ -18,6 +19,7 @@ interface PhotoMeta {
   scannedAt: string;
   candidateIds: string[];
   keptIds: string[];
+  parentPhoto?: string;
 }
 
 interface Candidate {
@@ -25,6 +27,9 @@ interface Candidate {
   cutoutUrl: string;
   nouns: string[];
   confidence: number;
+  photoPathname: string;
+  /** True while the tag event is still outstanding. Buttons stay disabled. */
+  tagging: boolean;
   /** Null when the tag call itself errored (retried); the user judges. */
   tags: {
     type: string;
@@ -34,6 +39,15 @@ interface Candidate {
     rejection_reason: string | null;
   } | null;
 }
+
+/** Cleanup prompt for one photo family once every candidate is decided. */
+interface PhotoPrompt {
+  root: Photo;
+  remaining: number;
+  found: number;
+}
+
+const TAG_TIMEOUT_MS = 20_000;
 
 interface CropTarget {
   displayUrl: string;
@@ -45,6 +59,7 @@ function candidateTitle(candidate: Candidate): string {
 }
 
 function candidateSubtitle(candidate: Candidate): string {
+  if (candidate.tagging) return "Tagging…";
   if (!candidate.tags) return "Tagging failed — you decide.";
   if (!candidate.tags.is_single_garment) return candidate.tags.rejection_reason ?? "Not sure.";
   return candidate.tags.primary_color;
@@ -80,7 +95,7 @@ function CandidateCard({
         <div className="mt-auto flex gap-3">
           <button
             type="button"
-            disabled={locked}
+            disabled={locked || candidate.tagging}
             onClick={() => onKeep(candidate.id)}
             aria-label={`${keepLabel} ${title}`}
             className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
@@ -89,7 +104,7 @@ function CandidateCard({
           </button>
           <button
             type="button"
-            disabled={locked}
+            disabled={locked || candidate.tagging}
             onClick={() => onDiscard(candidate.id)}
             aria-label={`Discard ${title}`}
             className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
@@ -175,31 +190,122 @@ export default function CapturePage() {
     };
   }, []);
 
-  /** Segment one photo by its Blob pathname; returns how many candidates were found. */
-  async function scanPhoto(photo: Photo, label: string): Promise<number> {
+  const tagTimers = useRef(new Map<string, number>());
+  const [photoPrompt, setPhotoPrompt] = useState<PhotoPrompt | null>(null);
+
+  // Tag-timeout timers must not outlive the page.
+  useEffect(() => {
+    const timers = tagTimers.current;
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+
+  function clearTagTimer(id: string) {
+    const timer = tagTimers.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      tagTimers.current.delete(id);
+    }
+  }
+
+  /** Flip a still-tagging card to untagged (timer fired or stream ended). */
+  function markUntagged(id: string) {
+    clearTagTimer(id);
+    setCandidates((prev) =>
+      prev.map((c) => (c.id === id && c.tagging ? { ...c, tagging: false } : c)),
+    );
+  }
+
+  function armTagTimer(id: string) {
+    clearTagTimer(id);
+    tagTimers.current.set(id, window.setTimeout(() => markUntagged(id), TAG_TIMEOUT_MS));
+  }
+
+  /** Root ancestor pathname for prompt/family tracking (crops nest flat). */
+  function rootOf(pathname: string): string {
+    return meta[pathname]?.parentPhoto ?? pathname;
+  }
+
+  function trackPrompt(root: Photo, freshCount: number) {
+    setPhotoPrompt((prev) =>
+      prev && prev.root.pathname === root.pathname
+        ? { ...prev, remaining: prev.remaining + freshCount, found: prev.found + freshCount }
+        : { root, remaining: freshCount, found: freshCount },
+    );
+  }
+
+  /** Segment one photo by its Blob pathname; streams cards progressively. */
+  async function scanPhoto(photo: Photo, label: string, parentOverride?: string): Promise<number> {
     setStatus(`Finding clothes in ${label}…`);
+    const rootPath = parentOverride ?? rootOf(photo.pathname);
+    const rootPhoto = photos.find((p) => p.pathname === rootPath) ?? photo;
+    let received = 0;
     try {
       const res = await fetch("/api/segment", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ photoPathname: photo.pathname }),
+        body: JSON.stringify(
+          parentOverride && parentOverride !== photo.pathname
+            ? { photoPathname: photo.pathname, parentPhoto: parentOverride }
+            : { photoPathname: photo.pathname },
+        ),
       });
-      const body = (await res.json()) as { candidates?: Candidate[]; error?: string };
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
-      const fresh = body.candidates ?? [];
-      if (fresh.length > 0) setCandidates((prev) => [...fresh, ...prev]);
-      setStatus(
-        fresh.length > 0
-          ? `Found ${fresh.length} item${fresh.length === 1 ? "" : "s"} in ${label}.`
-          : `No garments found in ${label}. Try a plainer background and better light.`,
-      );
+      if (!res.ok || !res.body) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      const parser = createNDJSONParser((event: unknown) => {
+        const typed = event as {
+          event?: string;
+          candidate?: Omit<Candidate, "tagging" | "tags">;
+          id?: string;
+          tags?: Candidate["tags"];
+        };
+        if (typed.event === "cutout" && typed.candidate) {
+          const c = typed.candidate;
+          received += 1;
+          armTagTimer(c.id);
+          setCandidates((prev) => [{ ...c, tagging: true, tags: null }, ...prev]);
+        } else if (typed.event === "tag" && typeof typed.id === "string") {
+          clearTagTimer(typed.id);
+          setCandidates((prev) =>
+            prev.map((c) =>
+              c.id === typed.id ? { ...c, tagging: false, tags: typed.tags ?? null } : c,
+            ),
+          );
+        }
+      });
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+      // Any card still tagging (timeout or truncated stream) becomes untagged.
+      setCandidates((prev) => {
+        prev.filter((c) => c.tagging).forEach((c) => clearTagTimer(c.id));
+        return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
+      });
+      if (received === 0) {
+        setStatus(`No garments found in ${label}. Try a plainer background and better light.`);
+      } else {
+        setStatus(`Found ${received} item${received === 1 ? "" : "s"} in ${label}.`);
+      }
+      trackPrompt(rootPhoto, received);
       await refresh();
-      return fresh.length;
+      return received;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Segmentation failed.";
-      setStatus(`${label} failed: ${message}`);
+      setCandidates((prev) => {
+        prev.filter((c) => c.tagging).forEach((c) => clearTagTimer(c.id));
+        return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
+      });
+      setStatus(received > 0 ? `Scan incomplete — showing what arrived. ${message}` : `${label} failed: ${message}`);
       await refresh();
-      return 0;
+      return received;
     }
   }
 
@@ -246,12 +352,15 @@ export default function CapturePage() {
       return;
     }
     // Backlog photo: the crop becomes a NEW photo; the original stays put.
+    // The crop records the root ancestor so cleanup tracks the whole family.
+    const parent =
+      meta[target.source.photo.pathname]?.parentPhoto ?? target.source.photo.pathname;
     setBusy(true);
     try {
       const jpeg = await resizeToJpeg(cropped);
       const photo = await uploadSingle(jpeg, "Cropped photo");
       await refresh();
-      if (photo) await scanPhoto(photo, "cropped photo");
+      if (photo) await scanPhoto(photo, "cropped photo", parent);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed.";
       setStatus(`Cropped photo failed: ${message}`);
@@ -354,7 +463,19 @@ export default function CapturePage() {
     }
   }
 
+  function decrementPrompt(candidate: Candidate | undefined) {
+    if (!candidate) return;
+    const root = rootOf(candidate.photoPathname);
+    setPhotoPrompt((prev) =>
+      prev && prev.root.pathname === root
+        ? { ...prev, remaining: Math.max(0, prev.remaining - 1) }
+        : prev,
+    );
+  }
+
   async function keep(id: string) {
+    const target = candidates.find((c) => c.id === id);
+    clearTagTimer(id);
     setActing(true);
     try {
       const res = await fetch("/api/closet/confirm", {
@@ -367,6 +488,7 @@ export default function CapturePage() {
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
       setCandidates((prev) => prev.filter((c) => c.id !== id));
+      decrementPrompt(target);
       setStatus("Kept! View it in your closet.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Keep failed.";
@@ -378,6 +500,8 @@ export default function CapturePage() {
   }
 
   async function discard(id: string) {
+    const target = candidates.find((c) => c.id === id);
+    clearTagTimer(id);
     setActing(true);
     try {
       const res = await fetch(`/api/closet/candidates/${id}`, { method: "DELETE" });
@@ -386,6 +510,7 @@ export default function CapturePage() {
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
       setCandidates((prev) => prev.filter((c) => c.id !== id));
+      decrementPrompt(target);
       setStatus("Discarded.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Discard failed.";
@@ -395,9 +520,37 @@ export default function CapturePage() {
     }
   }
 
+  async function removeFamily(root: Photo) {
+    setActing(true);
+    try {
+      const res = await fetch("/api/photos", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pathname: root.pathname, deleteFamily: true }),
+      });
+      const body = (await res.json()) as { deleted?: string[]; error?: string };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      const gone = new Set(body.deleted ?? [root.pathname]);
+      setPhotos((prev) => prev.filter((p) => !gone.has(p.pathname)));
+      setMeta((prev) => {
+        const next = { ...prev };
+        gone.forEach((pathname) => delete next[pathname]);
+        return next;
+      });
+      setPhotoPrompt(null);
+      setStatus("Photo and its crops deleted. Kept closet items are untouched.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Delete failed.";
+      setStatus(`Delete failed: ${message}`);
+    } finally {
+      setActing(false);
+    }
+    await refresh();
+  }
+
   async function keepAll() {
     const acceptedIds = candidates
-      .filter((c) => !c.tags || c.tags.is_single_garment)
+      .filter((c) => !c.tagging && (!c.tags || c.tags.is_single_garment))
       .map((c) => c.id);
     if (acceptedIds.length === 0) return;
     setActing(true);
@@ -424,8 +577,10 @@ export default function CapturePage() {
 
   const unscanned = photos.filter((photo) => !meta[photo.pathname]);
   const scanned = photos.filter((photo) => meta[photo.pathname]);
-  const accepted = candidates.filter((c) => !c.tags || c.tags.is_single_garment);
-  const rejected = candidates.filter((c) => c.tags && !c.tags.is_single_garment);
+  const accepted = candidates.filter(
+    (c) => c.tagging || !c.tags || c.tags.is_single_garment,
+  );
+  const rejected = candidates.filter((c) => !c.tagging && c.tags && !c.tags.is_single_garment);
   const locked = busy || acting || cropTarget !== null;
 
   return (
@@ -506,6 +661,68 @@ export default function CapturePage() {
                 ))}
               </ul>
             </details>
+          )}
+        </section>
+      )}
+      {photoPrompt && photoPrompt.remaining === 0 && (
+        <section aria-label="Photo cleanup" className="flex flex-col gap-4 rounded-2xl border border-neutral-300 p-4 dark:border-neutral-700">
+          {photoPrompt.found > 0 ? (
+            <>
+              <h2 className="text-2xl font-bold">Get another item from this photo?</h2>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void openBacklogCrop(photoPrompt.root)}
+                  className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  Crop another
+                </button>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void removeFamily(photoPrompt.root)}
+                  className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                >
+                  Done
+                </button>
+              </div>
+              <p className="text-base">Done deletes the photo and its crops. Kept items stay in your closet.</p>
+            </>
+          ) : (
+            <>
+              <h2 className="text-2xl font-bold">No garments found in this photo.</h2>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void openBacklogCrop(photoPrompt.root)}
+                  className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  Crop another
+                </button>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => {
+                    setBusy(true);
+                    void scanPhoto(photoPrompt.root, "photo").finally(() => setBusy(false));
+                  }}
+                  className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                >
+                  Scan again
+                </button>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => void removePhoto(photoPrompt.root)}
+                  aria-label="Delete this photo"
+                  className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                >
+                  Delete
+                </button>
+              </div>
+            </>
           )}
         </section>
       )}

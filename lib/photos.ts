@@ -17,6 +17,8 @@ export interface PhotoMeta {
   scannedAt: string;
   candidateIds: string[];
   keptIds: string[];
+  /** Pathname of the photo this one was cropped from (crops only). */
+  parentPhoto?: string;
 }
 
 export async function getPhotoMeta(photoPathname: string): Promise<PhotoMeta | null> {
@@ -69,10 +71,11 @@ export async function deletePhotoMeta(photoPathname: string): Promise<void> {
   await del(photoMetaPath(photoPathname));
 }
 
-/** Record a completed scan. Prior keptIds survive a rescan. */
+/** Record a completed scan. Prior keptIds and parent survive a rescan. */
 export async function recordScan(
   photoPathname: string,
   candidateIds: string[],
+  parentPhoto?: string,
 ): Promise<PhotoMeta> {
   const existing = await getPhotoMeta(photoPathname);
   const meta: PhotoMeta = {
@@ -81,6 +84,8 @@ export async function recordScan(
     candidateIds,
     keptIds: existing?.keptIds ?? [],
   };
+  const parent = existing?.parentPhoto ?? (parentPhoto && isPhotoPathname(parentPhoto) ? parentPhoto : undefined);
+  if (parent) meta.parentPhoto = parent;
   await savePhotoMeta(meta);
   return meta;
 }
@@ -96,6 +101,36 @@ export async function recordKept(photoPathname: string, keptIds: string[]): Prom
     candidateIds: existing?.candidateIds ?? [],
     keptIds: [...seen],
   };
+  if (existing?.parentPhoto) meta.parentPhoto = existing.parentPhoto;
   await savePhotoMeta(meta);
   return meta;
+}
+
+/**
+ * Delete a photo AND every crop derived from it (plus all their meta).
+ * Kept closet items are never touched: only photos/ and photos-meta/ blobs.
+ */
+export async function deletePhotoFamily(rootPathname: string): Promise<string[]> {
+  const all = await listPhotoMeta();
+  const family = [rootPathname];
+  for (const [pathname, meta] of Object.entries(all)) {
+    if (meta.parentPhoto === rootPathname && !family.includes(pathname)) {
+      family.push(pathname);
+    }
+  }
+  const deleted: string[] = [];
+  for (const pathname of family) {
+    try {
+      await del(pathname);
+      deleted.push(pathname);
+    } catch {
+      // Best-effort per blob; the meta sweep below still runs.
+    }
+    try {
+      await deletePhotoMeta(pathname);
+    } catch {
+      // Missing meta is not a failure.
+    }
+  }
+  return deleted;
 }
