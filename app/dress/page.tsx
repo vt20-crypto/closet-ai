@@ -1,0 +1,588 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+
+import { beep, unlockBeep } from "@/lib/beep";
+import {
+  advance,
+  backStep,
+  createDressState,
+  currentStep,
+  orderSteps,
+  skipStep,
+  type DressState,
+} from "@/lib/dress";
+import { slotForType } from "@/lib/outfits";
+import { speak, unlockSpeech } from "@/lib/speak";
+
+import { Sticker } from "../sticker";
+import VoiceButton from "../today/voice-button";
+
+interface ClosetView {
+  id: string;
+  cutoutUrl: string;
+  type: string;
+  primary_color: string;
+  nickname: string;
+  distinguishing_note: string;
+  slot: string;
+  layer: string;
+}
+
+interface TraceEntry {
+  tool: string;
+  detail: string;
+}
+
+type Phase = "loading" | "need-outfit" | "ready" | "guiding" | "finished";
+
+const LOCAL_COMMANDS = /\b(repeat|back|skip|next)\b/i;
+const REPLAN_KEYWORDS = [
+  "repeat",
+  "back",
+  "skip",
+  "next",
+  "done",
+  "laundry",
+  "cold",
+  "hot",
+  "shoes",
+  "dress",
+  "finish",
+  "again",
+];
+const START_KEYWORDS = [
+  "brunch",
+  "party",
+  "work",
+  "date",
+  "lazy",
+  "cozy",
+  "dinner",
+  "gym",
+  "class",
+  "wedding",
+  "interview",
+  "birthday",
+];
+
+/** Spoken + visible instruction for the current step. */
+function guidanceFor(state: DressState, items: Record<string, ClosetView>): string {
+  const step = currentStep(state);
+  if (!step) return "You're ready.";
+  const item = items[step.itemId];
+  if (!item) return "Find your next item.";
+  const total = state.steps.length;
+  const detail = item.distinguishing_note ? ` ${item.distinguishing_note}.` : "";
+  return (
+    `Step ${state.index + 1} of ${total}. Find your ${item.nickname}, ` +
+    `the ${item.primary_color} ${item.type}.${detail}`
+  );
+}
+
+export default function DressPage() {
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [items, setItems] = useState<Record<string, ClosetView>>({});
+  const [dress, setDress] = useState<DressState | null>(null);
+  const [status, setStatus] = useState("Loading your closet…");
+  const [busy, setBusy] = useState(false);
+  const [trace, setTrace] = useState<TraceEntry[]>([]);
+  const [wantedIds, setWantedIds] = useState<string[] | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const dressRef = useRef<DressState | null>(null);
+  const itemsRef = useRef<Record<string, ClosetView>>({});
+  dressRef.current = dress;
+  itemsRef.current = items;
+
+  function say(text: string) {
+    setStatus(text);
+    speak(text);
+  }
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  useEffect(() => stopCamera, []);
+
+  // Load the closet once; ?ids= starts an outfit, otherwise voice starts one.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const ids = (params.get("ids") ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      setWantedIds(ids.length > 0 ? ids : null);
+      try {
+        const res = await fetch("/api/closet", { cache: "no-store" });
+        const body = (await res.json()) as { items?: ClosetView[] };
+        if (!res.ok) throw new Error("closet failed");
+        const byId: Record<string, ClosetView> = {};
+        for (const item of body.items ?? []) byId[item.id] = item;
+        if (cancelled) return;
+        setItems(byId);
+        if (ids.length === 0) {
+          setPhase("need-outfit");
+          setStatus("Tell me the occasion and I'll pick an outfit to dress you in.");
+          return;
+        }
+        const missing = ids.filter((id) => !byId[id]);
+        if (missing.length > 0) {
+          setPhase("need-outfit");
+          setStatus("That outfit isn't in the closet anymore. Tell me the occasion instead.");
+          return;
+        }
+        startWithIds(ids, byId);
+      } catch {
+        if (!cancelled) {
+          setPhase("need-outfit");
+          setStatus("Couldn't load the closet. Check your connection and reload.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function startWithIds(ids: string[], byId: Record<string, ClosetView>) {
+    const ordered = orderSteps(
+      ids.map((id) => {
+        const item = byId[id];
+        return { id, slot: slotForType(item.type), layer: item.layer, nickname: item.nickname };
+      }),
+    );
+    setDress(createDressState(ordered));
+    setPhase("ready");
+    setStatus("Outfit ready. Tap Start getting dressed, then tap anywhere to check each item.");
+  }
+
+  async function ensureCamera(): Promise<boolean> {
+    try {
+      if (streamRef.current) return true;
+      if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) return false;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function snapPhoto(): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      try {
+        const video = videoRef.current;
+        if (!video || video.readyState < 2 || video.videoWidth === 0) {
+          resolve(null);
+          return;
+        }
+        const scale = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  function startSession() {
+    unlockSpeech();
+    unlockBeep();
+    beep();
+    void ensureCamera();
+    const state = dressRef.current;
+    if (!state) return;
+    setPhase("guiding");
+    say(guidanceFor(state, itemsRef.current));
+  }
+
+  function isFinalStep(state: DressState): boolean {
+    return state.steps.slice(state.index + 1).every((step) => step.status !== "todo");
+  }
+
+  async function checkBlob(blob: Blob, state: DressState) {
+    const step = currentStep(state);
+    if (!step) return;
+    setBusy(true);
+    setStatus("Checking what you're wearing…");
+    try {
+      const form = new FormData();
+      form.append("snapshot", blob, "snapshot.jpg");
+      form.append("targetId", step.itemId);
+      form.append(
+        "outfitIds",
+        JSON.stringify(state.steps.map((s) => s.itemId)),
+      );
+      form.append("finalStep", isFinalStep(state) ? "1" : "0");
+      const res = await fetch("/api/dress/check", { method: "POST", body: form });
+      const body = (await res.json()) as {
+        verdict?: string;
+        say?: string;
+        compliment?: string | null;
+        error?: string;
+        code?: string;
+      };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if (body.verdict === "match") {
+        beep(760);
+        const next = advance(state);
+        setDress(next);
+        if (next.done) {
+          finishSession(body.compliment ?? null);
+        } else {
+          say(guidanceFor(next, itemsRef.current));
+        }
+      } else if (body.verdict === "wrong_item") {
+        beep(330);
+        say(body.say ?? "That looks like a different item. Try again.");
+      } else {
+        beep(440);
+        say(body.say ?? "I couldn't tell. Try a closer or better-lit photo.");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Check failed.";
+      if (message.includes("hiccup")) {
+        say("I couldn't check that one. Tap to try again, or say skip.");
+      } else {
+        say(`Couldn't check: ${message}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function finishSession(compliment: string | null) {
+    stopCamera();
+    setPhase("finished");
+    beep(660);
+    window.setTimeout(() => beep(880), 180);
+    say(`You're ready. ${compliment ?? "Looking sharp."}`);
+  }
+
+  async function tapToCheck() {
+    const state = dressRef.current;
+    if (!state || busy || phase !== "guiding") return;
+    const photo = await snapPhoto();
+    if (!photo) {
+      // No live camera: fall back to the capture picker.
+      setStatus("Take a photo of what you're wearing.");
+      fileRef.current?.click();
+      return;
+    }
+    await checkBlob(photo, state);
+  }
+
+  function afterLocalMove(next: DressState, line: string) {
+    setDress(next);
+    beep();
+    if (next.done) {
+      finishSession(null);
+    } else {
+      say(`${line} ${guidanceFor(next, itemsRef.current)}`);
+    }
+  }
+
+  async function handleVoiceCommand(transcript: string) {
+    const state = dressRef.current;
+    if (!state || phase !== "guiding") return;
+    const match = transcript.toLowerCase().match(LOCAL_COMMANDS)?.[1]?.toLowerCase();
+    if (match === "repeat") {
+      say(guidanceFor(state, itemsRef.current));
+      return;
+    }
+    if (match === "back") {
+      const next = backStep(state);
+      setDress(next);
+      beep();
+      say(`Back one. ${guidanceFor(next, itemsRef.current)}`);
+      return;
+    }
+    if (match === "skip" || match === "next") {
+      afterLocalMove(skipStep(state), "Skipped.");
+      return;
+    }
+    // Anything else goes to the replan agent.
+    setBusy(true);
+    setStatus("Thinking…");
+    try {
+      const res = await fetch("/api/dress/replan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state, transcript }),
+      });
+      const body = (await res.json()) as {
+        say?: string;
+        state?: DressState;
+        trace?: TraceEntry[];
+        error?: string;
+      };
+      if (!res.ok || !body.state) throw new Error(body.error ?? `HTTP ${res.status}`);
+      // The agent only swaps within known ids; unknown steps would 400 above.
+      const validated = body.state.steps.every((s) => itemsRef.current[s.itemId])
+        ? body.state
+        : state;
+      setDress(validated);
+      setTrace(body.trace ?? []);
+      beep();
+      if (validated.done) {
+        stopCamera();
+        setPhase("finished");
+        say(body.say ?? "You're ready.");
+      } else {
+        say(`${body.say ?? "Done."} ${guidanceFor(validated, itemsRef.current)}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Replan failed.";
+      say(message.includes("hiccup") ? "I couldn't think that through. Try again." : message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function voiceStart(transcript: string, slots: { mood: string | null; occasion: string | null; occasion_text: string | null; destination: string | null; city: string | null }) {
+    setStatus(`Getting an outfit for "${transcript}"…`);
+    try {
+      const res = await fetch("/api/outfits", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mood: slots.mood,
+          occasion: slots.occasion,
+          occasionText: slots.occasion_text ?? undefined,
+          destination: slots.destination ?? undefined,
+          city: slots.city ?? undefined,
+          exclude: [],
+        }),
+      });
+      const body = (await res.json()) as {
+        outfits?: Array<{ item_ids: string[]; key: string }>;
+        missing?: string[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if ((body.missing ?? []).length > 0 || (body.outfits ?? []).length === 0) {
+        setStatus("Your closet can't make a full outfit yet. Add clothes first.");
+        return;
+      }
+      const ids = body.outfits?.[0]?.item_ids ?? [];
+      startWithIds(ids, itemsRef.current);
+    } catch (err) {
+      setStatus(err instanceof Error ? `Couldn't pick an outfit: ${err.message}` : "Couldn't pick an outfit.");
+    }
+  }
+
+  const step = dress ? currentStep(dress) : null;
+  const finalIds = dress?.steps.map((s) => s.itemId) ?? [];
+
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 p-6 md:max-w-[960px]">
+      <h1 className="font-display text-4xl">Get dressed</h1>
+
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        aria-label="Camera preview"
+        className="aspect-[4/3] w-full rounded-2xl bg-(--surface-2) object-cover"
+      />
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          const state = dressRef.current;
+          if (file && state) void checkBlob(file, state);
+        }}
+      />
+
+      {phase === "loading" && <p className="text-lg">Loading your closet…</p>}
+
+      {phase === "need-outfit" && (
+        <section aria-label="Pick an outfit by voice" className="flex flex-col gap-4">
+          <p className="text-lg">Tell me the occasion and I&apos;ll pick an outfit to dress you in.</p>
+          <VoiceButton
+            disabled={busy}
+            keywords={START_KEYWORDS}
+            onResult={(transcript, slots) => void voiceStart(transcript, slots)}
+            report={(message, speakIt) => {
+              setStatus(message);
+              if (speakIt) speak(message);
+            }}
+          />
+          <Link href="/today" className="text-lg underline">
+            Or pick an outfit on Today first
+          </Link>
+        </section>
+      )}
+
+      {phase === "ready" && (
+        <section aria-label="Start getting dressed" className="flex flex-1 flex-col gap-4">
+          <p className="text-lg">
+            {wantedIds ? "Outfit ready." : "Outfit picked."} Tap Start, then tap anywhere to check
+            each item as you put it on.
+          </p>
+          <button
+            type="button"
+            onClick={startSession}
+            className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text)"
+          >
+            Start getting dressed
+          </button>
+        </section>
+      )}
+
+      {(phase === "guiding" || phase === "finished") && dress && (
+        <>
+          <button
+            type="button"
+            disabled={busy || phase === "finished"}
+            onClick={() => void tapToCheck()}
+            aria-label={
+              phase === "finished"
+                ? "Outfit complete"
+                : busy
+                  ? "Checking what you're wearing"
+                  : "Check this step. Tap to take a snapshot."
+            }
+            className="flex min-h-[40dvh] flex-1 flex-col justify-center gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-6 text-left shadow-[0_10px_24px_var(--shadow)]"
+          >
+            <span className="font-display text-3xl">
+              {phase === "finished"
+                ? "You're ready."
+                : step
+                  ? guidanceFor(dress, items)
+                  : "You're ready."}
+            </span>
+            <span className="text-lg text-(--text-muted)">
+              {phase === "finished"
+                ? "Outfit complete."
+                : busy
+                  ? "Checking…"
+                  : "Tap anywhere to check this item."}
+            </span>
+          </button>
+
+          {phase === "guiding" && (
+            <div className="flex flex-wrap items-center gap-3">
+              <VoiceButton
+                disabled={busy}
+                keywords={REPLAN_KEYWORDS}
+                onResult={(transcript) => void handleVoiceCommand(transcript)}
+                report={(message, speakIt) => {
+                  setStatus(message);
+                  if (speakIt) speak(message);
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  const state = dressRef.current;
+                  if (state) afterLocalMove(skipStep(state), "Skipped.");
+                }}
+                className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  const state = dressRef.current;
+                  if (!state) return;
+                  const next = backStep(state);
+                  setDress(next);
+                  beep();
+                  say(`Back one. ${guidanceFor(next, itemsRef.current)}`);
+                }}
+                className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
+              >
+                Back
+              </button>
+            </div>
+          )}
+
+          {trace.length > 0 && (
+            <details className="rounded-2xl border border-(--border-soft) bg-(--surface) p-4">
+              <summary className="min-h-11 cursor-pointer text-lg font-semibold">
+                How I decided
+              </summary>
+              <ul className="mt-2 flex flex-col gap-2">
+                {trace.map((entry, i) => (
+                  <li key={`${entry.tool}-${i}`} className="text-lg">
+                    <span className="font-semibold">{entry.tool}: </span>
+                    {entry.detail}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
+          {phase === "finished" && (
+            <section aria-label="Final outfit" className="flex flex-col gap-4">
+              <ul
+                className="grid grid-cols-2 gap-4 rounded-2xl bg-(--surface-2) p-4 md:grid-cols-3"
+                aria-label="Outfit you are wearing"
+              >
+                {finalIds.map((id) => {
+                  const item = items[id];
+                  if (!item) return null;
+                  return (
+                    <li key={id} className="flex flex-col items-center gap-1">
+                      <span className="flex aspect-[3/4] w-full items-center justify-center">
+                        <Sticker src={item.cutoutUrl} alt={item.nickname} seedId={id} />
+                      </span>
+                      <span className="text-[13px] text-(--text-muted)">{item.nickname}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <Link href="/today" className="text-lg underline">
+                Back to Today
+              </Link>
+            </section>
+          )}
+        </>
+      )}
+
+      <p role="status" aria-live="polite" className="text-lg">
+        {status}
+      </p>
+
+      {phase === "guiding" && (
+        <p className="text-lg text-(--text-muted)">
+          Eyes-free: everything is spoken. Tap anywhere to check, or talk to change the plan.
+        </p>
+      )}
+    </main>
+  );
+}

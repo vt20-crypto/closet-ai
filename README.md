@@ -13,6 +13,8 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 | Garment tagging + single-garment gate (`/api/segment`) | `muse-spark-1.3`, Responses API, strict JSON | live |
 | Daily outfits + venue dress-code lookup (`/api/outfits`) | `muse-spark-1.3`, Responses API, strict JSON + `web_search` | live |
 | Voice input + /today slot fill (`/api/transcribe`) | `muse-voice-transcribe-1.0` ASR + `muse-spark-1.3`, strict JSON | live |
+| Dress-step camera check (`/api/dress/check`) | `muse-spark-1.3`, Responses API, strict JSON | live |
+| Voice replan agent (`/api/dress/replan`) | `muse-spark-1.3`, Responses API, function tools | live |
 
 ## Built during the hackathon
 
@@ -25,6 +27,15 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 - 2026-11-03: "scrapbook closet" reskin — warm paper palette + Playfair Display / DM Sans / Caveat (OFL, self-hosted via `next/font/google`), sticker cutouts with id-seeded tilt and tape nickname labels, bento Home with weather sticker, sticker grids, layered outfit collages, espresso tab bar; tag schema gains `nickname` (≤ 2 words, falls back to "<color> <type>").
 - 2026-11-03: voice on /today — tap-to-talk mic pill (Web Audio → 16 kHz mono 16-bit WAV in-browser, 20s cap, silence detect) → `/api/transcribe` (Muse Voice Transcribe ASR + Spark slot fill) fills the form and auto-runs outfits; outfit 1 read aloud via browser `speechSynthesis` + "Read again".
 
+- 2026-11-03: get-dressed agent — `/dress` (linked from each outfit card) talks the user through one outfit item by item: full-screen tap target with the spoken instruction, rear-camera snapshot (`getUserMedia` + `<input capture>` fallback, ≤1024px) → `/api/dress/check` (Spark `low` effort compares snapshot vs target cutout + ≤3 same-type items, verdict match/wrong_item/unsure naming the visible difference, server-validated ids) → voice replan loop (`get_outfit_state`, `swap_item`, `mark_unavailable`, `finish`; cap 5 turns, repeat-3× stop, model picks same-slot replacements, invalid ids fall back to a deterministic pick) with a "How I decided" trace; repeat/back/skip/next handled on-device; Web Audio step sounds; finish flat-lay. See Best Agentic below.
+
+## Best Agentic: get-dressed agent
+
+- Loop: `replanOutfit` (`lib/meta/spark.ts`) drives `runAgentLoop` (`lib/dressAgent.ts`) — model text ends the turn; `function_call` items run local tools and return as `function_call_output` with `previous_response_id`. Cap 5 turns; the same (tool, args) 3× stops the loop with a safe fallback line.
+- Tools: `get_outfit_state` (plan summary), `swap_item(slot, item_id, reason)` (model picks from same-slot candidates carrying nickname/color/warmth/formality/layer + today's weather; server validates id, slot, availability, then falls back deterministically and logs it), `mark_unavailable(item_id)`, `finish`.
+- Validation: every id the loop names is checked against the closet server-side (unknown `matched_item_id` forces `unsure`); `lib/dressAgent.test.ts` proves the cap, repeat-stop, valid-swap and invalid-swap-fallback paths with a fake model; `lib/dress.test.ts` locks the dressing order and state machine.
+- Eyes-free: every response spoken (`speechSynthesis`), whole screen is one tap target, sounds per step, local repeat/back/skip/next (no AI call), trace shown as plain-language tool lines only.
+
 ## Third-party code
 
 - SAM stream-event shim (`lib/meta/sam.ts`): adapted from Meta's MIT-licensed cookbook [`07_sam/01_api_basics`](https://github.com/meta-models/meta-model-cookbook/tree/main/07_sam/01_api_basics) (`typescript/sam-api.ts`) — synthesizes `response.output_text.done` from `response.content_part.done`.
@@ -34,7 +45,8 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 
 ## Not Meta
 
-- Spoken replies (`speechSynthesis` outfit readout + "Read again"): browser Web Speech API, not a Meta model.
+- Spoken replies (`speechSynthesis` outfit readout + "Read again", all `/dress` guidance/verdicts): browser Web Speech API, not a Meta model.
+- Step sounds (`/dress` confirmation blips): Web Audio oscillator in the browser, not a Meta model.
 - Weather: Open-Meteo (free, no key) — planned.
 - Storage: Vercel Blob.
 

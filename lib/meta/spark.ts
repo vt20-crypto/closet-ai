@@ -1,6 +1,17 @@
 import "server-only";
 
 import type { RawOutfit } from "../outfits";
+import type { DressState } from "../dress";
+import {
+  candidateContext,
+  replanToolDefinitions,
+  runAgentLoop,
+  runReplanTool,
+  type AgentTraceEntry,
+  type AgentTurn,
+  type ReplanCandidate,
+  type ReplanContext,
+} from "../dressAgent";
 
 import { getMetaClient } from "./client";
 import { hashKey, readCache, writeCache } from "../cache";
@@ -427,4 +438,219 @@ export async function tagGarment(
     }
   }
   return { tags: rejected("tag_retries_exhausted"), errored: true };
+}
+
+// --- Get-dressed agent ---
+
+const CHECK_SCHEMA = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["match", "wrong_item", "unsure"] },
+    matched_item_id: { type: ["string", "null"] },
+    say: { type: "string" },
+    compliment: { type: "string" },
+  },
+  required: ["verdict", "matched_item_id", "say", "compliment"],
+  additionalProperties: false,
+} as const;
+
+export interface DressCheckCandidate {
+  id: string;
+  nickname: string;
+  primary_color: string;
+  distinguishing_note: string;
+  /** Public cutout URL, passed straight through as the reference image. */
+  cutoutUrl: string;
+}
+
+export interface DressCheckInput {
+  /** Snapshot JPEG bytes (route-resized to ≤1024px), inlined as a data URL. */
+  snapshotJpeg: Buffer;
+  target: DressCheckCandidate;
+  /** Same-type closet items that are the likely confusions (up to 3). */
+  others: DressCheckCandidate[];
+  /** True when this is the outfit's last step (asks for a compliment). */
+  finalStep: boolean;
+  budget?: RetryBudget;
+}
+
+export interface DressCheckResult {
+  verdict: "match" | "wrong_item" | "unsure";
+  matched_item_id: string | null;
+  say: string;
+  compliment: string | null;
+}
+
+function truncateWords(text: string, maxWords: number): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length > maxWords ? words.slice(0, maxWords).join(" ") : text;
+}
+
+/**
+ * Check a dressed step: Spark (low effort for accuracy — look-alikes are the
+ * demo moment) compares the snapshot against the target cutout plus up to 3
+ * same-type items. IDs are validated by the route against the closet.
+ */
+export async function checkSnapshot(input: DressCheckInput): Promise<DressCheckResult> {
+  const api = getMetaClient();
+  const describe = (c: DressCheckCandidate) =>
+    `${c.id} ("${c.nickname}", ${c.primary_color}; tells apart by: ${c.distinguishing_note || "general look"})`;
+  const prompt =
+    `The user was asked to put on this item: ${describe(input.target)}. ` +
+    `The images arrive in order: the target cutout, then same-type cutouts, then the snapshot photo LAST. ` +
+    `The snapshot shows what they actually put on. ` +
+    `Compare distinguishing details carefully: color shade, collar, buttons, print, pockets. ` +
+    (input.others.length > 0
+      ? `These same-type closet items are the likely confusions: ${input.others.map(describe).join(" | ")}. `
+      : `No same-type alternatives exist in the closet. `) +
+    `verdict is "match" if the snapshot shows the target, "wrong_item" if it shows one of the others, "unsure" if you cannot tell. ` +
+    `matched_item_id is the shown item's id, or null when unsure. ` +
+    `say (25 words or fewer, spoken aloud): for a match, confirm naming the item; ` +
+    `for wrong_item, name which item it looks like AND the visible difference (e.g. different buttons); ` +
+    `for unsure, ask for a closer or better-lit photo. ` +
+    (input.finalStep
+      ? `compliment is a one-line compliment for finishing the outfit.`
+      : `compliment is an empty string.`);
+  const references = [input.target, ...input.others].map((c) => ({
+    type: "input_image" as const,
+    detail: "auto" as const,
+    image_url: c.cutoutUrl,
+  }));
+  const res = await withTransient404Retry(
+    "spark dress check",
+    () =>
+      api.responses.create({
+        model: MODEL,
+        // Accuracy over speed: look-alike tell-aparts are the demo moment.
+        reasoning: { effort: "low" },
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: prompt },
+              ...references,
+              {
+                type: "input_image",
+                detail: "auto",
+                image_url: `data:image/jpeg;base64,${input.snapshotJpeg.toString("base64")}`,
+              },
+            ],
+          },
+        ],
+        text: { format: { type: "json_schema", name: "dress_check", strict: true, schema: CHECK_SCHEMA } },
+      }),
+    undefined,
+    input.budget,
+  );
+  const parsed = JSON.parse(res.output_text ?? "") as Partial<DressCheckResult>;
+  const verdict =
+    parsed.verdict === "match" || parsed.verdict === "wrong_item" || parsed.verdict === "unsure"
+      ? parsed.verdict
+      : "unsure";
+  return {
+    verdict,
+    matched_item_id: typeof parsed.matched_item_id === "string" ? parsed.matched_item_id : null,
+    say: truncateWords(typeof parsed.say === "string" ? parsed.say : "I couldn't tell.", 25),
+    compliment:
+      input.finalStep && typeof parsed.compliment === "string" && parsed.compliment.trim()
+        ? parsed.compliment.trim()
+        : null,
+  };
+}
+
+export interface ReplanInput {
+  items: ReplanCandidate[];
+  state: DressState;
+  transcript: string;
+  weatherLine: string | null;
+  budget?: RetryBudget;
+}
+
+export interface ReplanOutcome {
+  say: string;
+  state: DressState;
+  trace: AgentTraceEntry[];
+  steps: number;
+  stopped: "done" | "cap" | "repeat";
+}
+
+function describeReplanState(state: DressState): string {
+  const steps = state.steps
+    .map((step, i) => `${i === state.index ? ">" : " "}${step.itemId}:${step.status}`)
+    .join(" ");
+  return `steps ${steps}; unavailable: ${state.unavailableIds.join(",") || "none"}`;
+}
+
+/**
+ * Voice replan loop: the model reasons over the outfit state and calls tools;
+ * every id the loop touches is validated by runReplanTool against the closet
+ * items provided here. Cap 5 turns; same (tool, args) 3× stops the loop.
+ */
+export async function replanOutfit(input: ReplanInput): Promise<ReplanOutcome> {
+  const api = getMetaClient();
+  const tools = replanToolDefinitions();
+  const systemPrompt =
+    `You guide a low-vision user getting dressed, one item at a time. Current plan: ${describeReplanState(input.state)}. ` +
+    `They just said: "${input.transcript}". ` +
+    `Same-slot candidates (pick replacements ONLY from these ids):\n${candidateContext({ items: input.items, weatherLine: input.weatherLine, state: input.state })} ` +
+    `Use get_outfit_state when unsure; swap_item(slot, item_id, reason) to change an item; ` +
+    `mark_unavailable(item_id) for laundry/lost items; finish when they say done or the outfit is complete. ` +
+    `Never invent item ids. Reply to the user in at most 2 short sentences (spoken aloud).`;
+  let previousResponseId: string | undefined;
+  const callTurn = async (
+    outputs?: Array<{ callId: string; output: string }>,
+  ): Promise<{ turn: AgentTurn; responseId: string }> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any = await withTransient404Retry(
+      "spark dress replan",
+      () =>
+        api.responses.create({
+          model: MODEL,
+          reasoning: { effort: "low" },
+          tools,
+          ...(previousResponseId
+            ? {
+                previous_response_id: previousResponseId,
+                input: (outputs ?? []).map((o) => ({
+                  type: "function_call_output",
+                  call_id: o.callId,
+                  output: o.output,
+                })),
+              }
+            : { input: systemPrompt }),
+        }),
+      undefined,
+      input.budget,
+    );
+    previousResponseId = res.id as string;
+    const found: Array<{ name: string; args: Record<string, unknown>; callId: string }> = [];
+    for (const item of (res.output ?? []) as Array<{ type?: string }>) {
+      if (item.type === "function_call") {
+        const call = item as unknown as { name: string; arguments: string; call_id: string };
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          args = {};
+        }
+        found.push({ name: call.name, args, callId: call.call_id });
+      }
+    }
+    if (found.length > 0) return { turn: { kind: "tools", calls: found }, responseId: previousResponseId };
+    return { turn: { kind: "text", text: res.output_text ?? "" }, responseId: previousResponseId };
+  };
+
+  let context: ReplanContext = { items: input.items, weatherLine: input.weatherLine, state: input.state };
+  const outcome = await runAgentLoop({
+    initialContext: context,
+    firstTurn: async () => (await callTurn()).turn,
+    nextTurn: async (outputs) => (await callTurn(outputs)).turn,
+    onTool: async (name, args) => {
+      const applied = runReplanTool(context, name, args);
+      context = applied.context;
+      return applied;
+    },
+  });
+  return { say: outcome.say, state: outcome.context.state, trace: outcome.trace, steps: outcome.steps, stopped: outcome.stopped };
 }

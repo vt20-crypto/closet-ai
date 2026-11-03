@@ -679,6 +679,14 @@ export default function TodayPage() {
                   Outfit {index + 1} of {page.length}
                 </h2>
                 <p className="self-start">
+                  <Link
+                    href={`/dress?ids=${outfit.item_ids.join(",")}`}
+                    className="inline-block min-h-11 px-1 py-2 text-lg underline"
+                  >
+                    Get dressed with me
+                  </Link>
+                </p>
+                <p className="self-start">
                   <Tape label={tapeText} seedId={outfit.key} />
                 </p>
                 {outfit.source === "rules" ? (
