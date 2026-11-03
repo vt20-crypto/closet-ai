@@ -13,7 +13,8 @@ export default function HealthStatus() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/health", { cache: "no-store" })
+    // Rechecks bypass the 60s server cache to show the live result.
+    fetch(attempt === 0 ? "/api/health" : "/api/health?fresh=1", { cache: "no-store" })
       .then(async (res) => {
         const body = (await res.json()) as {
           ok: boolean;
@@ -55,7 +56,10 @@ export default function HealthStatus() {
       {state.status !== "loading" && (
         <button
           type="button"
-          onClick={() => setAttempt((n) => n + 1)}
+          onClick={() => {
+            setState({ status: "loading" });
+            setAttempt((n) => n + 1);
+          }}
           className="min-h-11 rounded-full border border-neutral-400 px-4 text-base"
         >
           Recheck

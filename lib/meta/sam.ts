@@ -8,6 +8,7 @@ import {
 } from "@meta-sam/parser";
 
 import { getMetaClient } from "./client";
+import { isTransientModel404, logModel404Retry, model404RetryDelayMs } from "./retry";
 
 /**
  * Specific garment nouns, one per SAM request. Generic phrases ("clothing")
@@ -170,7 +171,9 @@ export async function segmentBytes(
     masks: 0,
     detections: [],
   });
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  let retries404 = 0;
+  let retriesBackoff = 0;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       const stream = await api.responses.create({
         model: "sam-3.1",
@@ -222,9 +225,18 @@ export async function segmentBytes(
       const status = (err as { status?: number })?.status;
       // The model declines some images; a 400 is final, not worth retrying.
       if (status === 400) return failure(err);
-      const backoff = retryAfterMs(err, attempt);
-      if (backoff !== null && attempt < 3) {
+      // Intermittent 404 "model not found" from the hosting edge: transient.
+      if (isTransientModel404(err)) {
+        if (retries404 >= 3) return failure(err);
+        logModel404Retry(`sam noun=${noun}`, retries404, err);
+        await sleep(model404RetryDelayMs(retries404));
+        retries404 += 1;
+        continue;
+      }
+      const backoff = retryAfterMs(err, retriesBackoff);
+      if (backoff !== null && retriesBackoff < 3) {
         await sleep(backoff);
+        retriesBackoff += 1;
         continue;
       }
       return failure(err);

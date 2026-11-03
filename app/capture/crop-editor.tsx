@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Selection as fractions (0..1) of the natural image. */
 export interface CropSelection {
@@ -11,8 +11,23 @@ export interface CropSelection {
 }
 
 const MIN_SIZE = 0.05;
+/** The box the editor opens with: inset ~5% from every edge. */
+const DEFAULT_BOX: CropSelection = { x: 0.05, y: 0.05, w: 0.9, h: 0.9 };
 const KEYBOARD_STEP = 0.02;
 const KEYBOARD_BIG_STEP = 0.1;
+
+type ResizeHandle = "tl" | "tr" | "bl" | "br" | "t" | "b" | "l" | "r";
+
+const HANDLE_LABELS: Record<ResizeHandle, string> = {
+  tl: "Resize from top-left corner",
+  tr: "Resize from top-right corner",
+  bl: "Resize from bottom-left corner",
+  br: "Resize from bottom-right corner",
+  t: "Resize from top edge",
+  b: "Resize from bottom edge",
+  l: "Resize from left edge",
+  r: "Resize from right edge",
+};
 
 function clampSelection(sel: CropSelection): CropSelection {
   const w = Math.max(MIN_SIZE, Math.min(1, sel.w));
@@ -50,17 +65,8 @@ export async function cropSelectionToJpeg(imageUrl: string, sel: CropSelection):
   }
 }
 
-type Corner = "tl" | "tr" | "bl" | "br";
-
-const CORNER_LABELS: Record<Corner, string> = {
-  tl: "Move top-left corner",
-  tr: "Move top-right corner",
-  bl: "Move bottom-left corner",
-  br: "Move bottom-right corner",
-};
-
-function moveCorner(sel: CropSelection, corner: Corner, dx: number, dy: number): CropSelection {
-  switch (corner) {
+function applyResize(sel: CropSelection, handle: ResizeHandle, dx: number, dy: number): CropSelection {
+  switch (handle) {
     case "tl":
       return clampSelection({ x: sel.x + dx, y: sel.y + dy, w: sel.w - dx, h: sel.h - dy });
     case "tr":
@@ -69,11 +75,25 @@ function moveCorner(sel: CropSelection, corner: Corner, dx: number, dy: number):
       return clampSelection({ x: sel.x + dx, y: sel.y, w: sel.w - dx, h: sel.h + dy });
     case "br":
       return clampSelection({ x: sel.x, y: sel.y, w: sel.w + dx, h: sel.h + dy });
+    case "t":
+      return clampSelection({ x: sel.x, y: sel.y + dy, w: sel.w, h: sel.h - dy });
+    case "b":
+      return clampSelection({ x: sel.x, y: sel.y, w: sel.w, h: sel.h + dy });
+    case "l":
+      return clampSelection({ x: sel.x + dx, y: sel.y, w: sel.w - dx, h: sel.h });
+    case "r":
+      return clampSelection({ x: sel.x, y: sel.y, w: sel.w + dx, h: sel.h });
   }
 }
 
 function moveBox(sel: CropSelection, dx: number, dy: number): CropSelection {
   return clampSelection({ ...sel, x: sel.x + dx, y: sel.y + dy });
+}
+
+interface DragState {
+  mode: { kind: "move" } | { kind: "resize"; handle: ResizeHandle };
+  startPt: { x: number; y: number };
+  startSel: CropSelection;
 }
 
 interface CropEditorProps {
@@ -83,10 +103,41 @@ interface CropEditorProps {
 
 export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [working, setWorking] = useState(false);
-  const [selection, setSelection] = useState<CropSelection | null>(null);
+  const [selection, setSelection] = useState<CropSelection>(DEFAULT_BOX);
+
+  // Window-level move/up listeners so drags keep tracking outside the photo.
+  useEffect(() => {
+    function onMove(event: PointerEvent) {
+      const drag = dragRef.current;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!drag || !rect || rect.width === 0 || rect.height === 0) return;
+      const current = {
+        x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      };
+      const dx = current.x - drag.startPt.x;
+      const dy = current.y - drag.startPt.y;
+      setSelection(
+        drag.mode.kind === "move"
+          ? moveBox(drag.startSel, dx, dy)
+          : applyResize(drag.startSel, drag.mode.handle, dx, dy),
+      );
+    }
+    function onUp() {
+      dragRef.current = null;
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
 
   function toFraction(clientX: number, clientY: number): { x: number; y: number } {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -95,6 +146,15 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
       x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
       y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
     };
+  }
+
+  function insideSelection(pt: { x: number; y: number }): boolean {
+    return (
+      pt.x >= selection.x &&
+      pt.x <= selection.x + selection.w &&
+      pt.y >= selection.y &&
+      pt.y <= selection.y + selection.h
+    );
   }
 
   function handleKey(event: React.KeyboardEvent, apply: (dx: number, dy: number) => void) {
@@ -111,7 +171,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
   }
 
   async function applyCrop() {
-    if (!selection || working) return;
+    if (!loaded || working) return;
     setWorking(true);
     try {
       onDone(await cropSelectionToJpeg(imageUrl, selection));
@@ -120,44 +180,32 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
     }
   }
 
+  function startDrag(
+    event: React.PointerEvent,
+    mode: DragState["mode"],
+  ) {
+    if (working) return;
+    event.stopPropagation();
+    event.preventDefault();
+    dragRef.current = { mode, startPt: toFraction(event.clientX, event.clientY), startSel: selection };
+  }
+
   return (
     <section aria-label="Crop photo" className="flex flex-col gap-4">
       <h2 className="text-2xl font-bold">Crop (optional)</h2>
-      <p className="text-lg">Drag on the photo to frame the garment, or skip to use the whole photo.</p>
+      <p className="text-lg">
+        Drag inside the box to move it, drag a corner or edge to resize — or skip to use the whole photo.
+      </p>
       <div
         ref={containerRef}
-        className="relative w-full touch-none overflow-hidden rounded-2xl border border-neutral-300 dark:border-neutral-700"
+        className="relative w-full touch-none overflow-hidden rounded-2xl border border-neutral-300 select-none dark:border-neutral-700"
         style={{ touchAction: "none" }}
         onPointerDown={(event) => {
-          if ((event.target as HTMLElement).closest("button") || working) return;
-          (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
-          const start = toFraction(event.clientX, event.clientY);
-          dragStart.current = start;
-          setSelection({ x: start.x, y: start.y, w: 0, h: 0 });
-        }}
-        onPointerMove={(event) => {
-          const start = dragStart.current;
-          if (!start) return;
-          const current = toFraction(event.clientX, event.clientY);
-          setSelection(
-            clampSelection({
-              x: Math.min(start.x, current.x),
-              y: Math.min(start.y, current.y),
-              w: Math.abs(current.x - start.x),
-              h: Math.abs(current.y - start.y),
-            }),
-          );
-        }}
-        onPointerUp={() => {
-          dragStart.current = null;
-          setSelection((prev) => {
-            if (!prev) return prev;
-            if (prev.w < MIN_SIZE || prev.h < MIN_SIZE) return null;
-            return prev;
-          });
-        }}
-        onPointerCancel={() => {
-          dragStart.current = null;
+          if ((event.target as HTMLElement).closest("button") || working || !loaded) return;
+          const pt = toFraction(event.clientX, event.clientY);
+          // Drags outside the box do nothing.
+          if (!insideSelection(pt)) return;
+          dragRef.current = { mode: { kind: "move" }, startPt: pt, startSel: selection };
         }}
       >
         {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
@@ -168,7 +216,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           className="block w-full"
           draggable={false}
         />
-        {loaded && selection && (
+        {loaded && (
           <>
             <div
               className="absolute border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]"
@@ -182,22 +230,28 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
               role="application"
               aria-label="Crop selection. Arrow keys move it; shift plus arrows moves more."
               onKeyDown={(event) =>
-                handleKey(event, (dx, dy) => setSelection((prev) => (prev ? moveBox(prev, dx, dy) : prev)))
+                handleKey(event, (dx, dy) => setSelection((prev) => moveBox(prev, dx, dy)))
               }
-            />
-            {(Object.keys(CORNER_LABELS) as Corner[]).map((corner) => (
+            >
+              {/* Rule-of-thirds grid. */}
+              <div aria-hidden className="pointer-events-none absolute inset-0">
+                <div className="absolute top-0 bottom-0 left-1/3 w-px bg-white/60" />
+                <div className="absolute top-0 bottom-0 left-2/3 w-px bg-white/60" />
+                <div className="absolute top-1/3 right-0 left-0 h-px bg-white/60" />
+                <div className="absolute top-2/3 right-0 left-0 h-px bg-white/60" />
+              </div>
+            </div>
+            {(Object.keys(HANDLE_LABELS) as ResizeHandle[]).map((handle) => (
               <button
-                key={corner}
+                key={handle}
                 type="button"
-                aria-label={CORNER_LABELS[corner]}
+                aria-label={HANDLE_LABELS[handle]}
                 className="absolute z-10 h-11 w-11 rounded-full border-2 border-white bg-black/70"
-                style={{
-                  left: `calc(${(corner === "tl" || corner === "bl" ? selection.x : selection.x + selection.w) * 100}% - 22px)`,
-                  top: `calc(${(corner === "tl" || corner === "tr" ? selection.y : selection.y + selection.h) * 100}% - 22px)`,
-                }}
+                style={handleStyle(handle, selection)}
+                onPointerDown={(event) => startDrag(event, { kind: "resize", handle })}
                 onKeyDown={(event) =>
                   handleKey(event, (dx, dy) =>
-                    setSelection((prev) => (prev ? moveCorner(prev, corner, dx, dy) : prev))
+                    setSelection((prev) => applyResize(prev, handle, dx, dy)),
                   )
                 }
               />
@@ -205,14 +259,22 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           </>
         )}
       </div>
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <button
           type="button"
-          disabled={!selection || working}
+          disabled={!loaded || working}
           onClick={() => void applyCrop()}
           className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
         >
           {working ? "Cropping…" : "Use crop"}
+        </button>
+        <button
+          type="button"
+          disabled={working}
+          onClick={() => setSelection(DEFAULT_BOX)}
+          className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+        >
+          Reset
         </button>
         <button
           type="button"
@@ -225,4 +287,13 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
       </div>
     </section>
   );
+}
+
+function handleStyle(handle: ResizeHandle, sel: CropSelection): React.CSSProperties {
+  const cx = handle.includes("l") ? sel.x : handle.includes("r") ? sel.x + sel.w : sel.x + sel.w / 2;
+  const cy = handle.includes("t") ? sel.y : handle.includes("b") ? sel.y + sel.h : sel.y + sel.h / 2;
+  return {
+    left: `calc(${cx * 100}% - 22px)`,
+    top: `calc(${cy * 100}% - 22px)`,
+  };
 }

@@ -3,6 +3,12 @@ import "server-only";
 import type { RawOutfit } from "../outfits";
 
 import { getMetaClient } from "./client";
+import {
+  isTransientModel404,
+  logModel404Retry,
+  model404RetryDelayMs,
+  withTransient404Retry,
+} from "./retry";
 
 const MODEL = "muse-spark-1.3";
 
@@ -109,14 +115,16 @@ export interface DressCodeNote {
 export async function fetchDressCode(venue: string): Promise<DressCodeNote | null> {
   const api = getMetaClient();
   try {
-    const res = await api.responses.create(
-      {
-        model: MODEL,
-        reasoning: { effort: "low" },
-        tools: [{ type: "web_search" }],
-        input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
-      },
-      { timeout: 10_000, maxRetries: 0 },
+    const res = await withTransient404Retry("spark dress", () =>
+      api.responses.create(
+        {
+          model: MODEL,
+          reasoning: { effort: "low" },
+          tools: [{ type: "web_search" }],
+          input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
+        },
+        { timeout: 10_000, maxRetries: 0 },
+      ),
     );
     const note = (res.output_text ?? "").trim();
     if (!note) return null;
@@ -226,12 +234,14 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
       `weather_note is one line of clothing advice for the weather WITHOUT temperature numbers (numbers render separately). ` +
       `reason is one or two sentences tying the outfit to the mood and occasion.`,
   );
-  const res = await api.responses.create({
-    model: MODEL,
-    reasoning: { effort: "low" },
-    input: parts.join("\n"),
-    text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
-  });
+  const res = await withTransient404Retry("spark outfits", () =>
+    api.responses.create({
+      model: MODEL,
+      reasoning: { effort: "low" },
+      input: parts.join("\n"),
+      text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
+    }),
+  );
   const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
   return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
 }
@@ -281,7 +291,9 @@ export async function tagGarment(
 ): Promise<TagResult> {
   const api = getMetaClient();
   const prompt = opts?.isPair ? BASE_PROMPT + PAIR_PROMPT : BASE_PROMPT;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  let retries404 = 0;
+  let retriesBackoff = 0;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       const res = await api.responses.create({
         model: MODEL,
@@ -306,15 +318,25 @@ export async function tagGarment(
       if (status === 400 && /content_policy_violation/i.test(message)) {
         return { tags: rejected("content_policy_violation"), errored: false };
       }
-      if (status === 429 && attempt < 3) {
+      if (isTransientModel404(err)) {
+        if (retries404 >= 3) {
+          return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
+        }
+        logModel404Retry("spark tag", retries404, err);
+        await sleep(model404RetryDelayMs(retries404));
+        retries404 += 1;
+        continue;
+      }
+      if (status === 429 && retriesBackoff < 3) {
         const headers = (err as { headers?: unknown })?.headers;
         const headerValue =
           headers && typeof (headers as Headers).get === "function"
             ? (headers as Headers).get("retry-after")
             : null;
         const secs = headerValue ? Number(headerValue) : NaN;
-        const backoff = Number.isFinite(secs) ? Math.max(0, secs * 1000) : 500 * 2 ** attempt;
+        const backoff = Number.isFinite(secs) ? Math.max(0, secs * 1000) : 500 * 2 ** retriesBackoff;
         await sleep(backoff);
+        retriesBackoff += 1;
         continue;
       }
       return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
