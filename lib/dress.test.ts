@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import type { ClosetItem } from "./closet.ts";
 import {
   advance,
   applySwap,
@@ -11,6 +12,7 @@ import {
   markUnavailable,
   orderSteps,
   skipStep,
+  toDressItem,
   type DressItem,
 } from "./dress.ts";
 
@@ -97,5 +99,55 @@ describe("dress state machine", () => {
 
   it("empty outfits finish immediately", () => {
     assert.equal(createDressState([]).done, true);
+  });
+});
+
+describe("toDressItem", () => {
+  // Real GET /api/closet shape: fields nested under tags.
+  const closetItem = (id: string, tags: Partial<ClosetItem["tags"]>): ClosetItem => ({
+    id,
+    cutoutUrl: `https://example.com/${id}.png`,
+    nouns: ["shirt"],
+    confidence: 0.95,
+    box: { left: 0, top: 0, right: 10, bottom: 10 },
+    tags: {
+      is_single_garment: true,
+      rejection_reason: null,
+      type: "t-shirt",
+      primary_color: "purple",
+      secondary_colors: [],
+      formality: 2,
+      warmth: 2,
+      layer: "base",
+      fabric_weight: "light",
+      pattern: "solid",
+      seasons: ["summer"],
+      distinguishing_note: "small pocket",
+      nickname: "Grape Tee",
+      ...tags,
+    },
+    photoUrl: "https://example.com/photo.jpg",
+    createdAt: "2026-11-03T00:00:00.000Z",
+  });
+
+  it("flattens nested tags for dressing order", () => {
+    const item = toDressItem(closetItem("a", {}));
+    assert.equal(item.id, "a");
+    assert.equal(item.slot, "top");
+    assert.equal(item.layer, "base");
+    assert.equal(item.nickname, "Grape Tee");
+  });
+
+  it("falls back when the nickname is missing", () => {
+    const item = toDressItem(closetItem("b", { nickname: "" }));
+    assert.equal(item.nickname, "purple t-shirt");
+  });
+
+  it("falls back to other/base on missing tags", () => {
+    const bare = { id: "c", tags: null };
+    const item = toDressItem(bare);
+    assert.equal(item.slot, "other");
+    assert.equal(item.layer, "base");
+    assert.equal(item.nickname, "unknown other");
   });
 });

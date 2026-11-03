@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import { beep, unlockBeep } from "@/lib/beep";
+import type { ClosetItem } from "@/lib/closet";
 import {
   advance,
   backStep,
@@ -11,23 +12,21 @@ import {
   currentStep,
   orderSteps,
   skipStep,
+  toDressItem,
+  type DressItem,
   type DressState,
 } from "@/lib/dress";
-import { slotForType } from "@/lib/outfits";
 import { speak, unlockSpeech } from "@/lib/speak";
 
 import { Sticker } from "../sticker";
 import VoiceButton from "../today/voice-button";
 
-interface ClosetView {
-  id: string;
+/** DressItem (order/slot/nickname) plus the display fields the page speaks. */
+interface ClosetView extends DressItem {
   cutoutUrl: string;
   type: string;
   primary_color: string;
-  nickname: string;
   distinguishing_note: string;
-  slot: string;
-  layer: string;
 }
 
 interface TraceEntry {
@@ -89,6 +88,8 @@ export default function DressPage() {
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState<TraceEntry[]>([]);
   const [wantedIds, setWantedIds] = useState<string[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [skippedIds, setSkippedIds] = useState<string[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -122,10 +123,21 @@ export default function DressPage() {
       setWantedIds(ids.length > 0 ? ids : null);
       try {
         const res = await fetch("/api/closet", { cache: "no-store" });
-        const body = (await res.json()) as { items?: ClosetView[] };
-        if (!res.ok) throw new Error("closet failed");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Real API shape: display fields nested under tags; toDressItem flattens.
+        const body = (await res.json()) as { items?: ClosetItem[] };
         const byId: Record<string, ClosetView> = {};
-        for (const item of body.items ?? []) byId[item.id] = item;
+        for (const item of body.items ?? []) {
+          if (!item || typeof item.id !== "string") continue;
+          const flat = toDressItem(item);
+          byId[item.id] = {
+            ...flat,
+            cutoutUrl: typeof item.cutoutUrl === "string" ? item.cutoutUrl : "",
+            type: item.tags?.type ?? "other",
+            primary_color: item.tags?.primary_color ?? "",
+            distinguishing_note: item.tags?.distinguishing_note ?? "",
+          };
+        }
         if (cancelled) return;
         setItems(byId);
         if (ids.length === 0) {
@@ -133,17 +145,27 @@ export default function DressPage() {
           setStatus("Tell me the occasion and I'll pick an outfit to dress you in.");
           return;
         }
-        const missing = ids.filter((id) => !byId[id]);
-        if (missing.length > 0) {
+        const usable = ids.filter((id) => Boolean(byId[id]?.type));
+        const missing = ids.filter((id) => !byId[id]?.type);
+        if (usable.length === 0) {
           setPhase("need-outfit");
           setStatus("That outfit isn't in the closet anymore. Tell me the occasion instead.");
+          return;
+        }
+        if (missing.length > 0) {
+          setSkippedIds(missing);
+          startWithIds(usable, byId);
+          setStatus(
+            `Some items in this outfit couldn't be loaded: ${missing.join(", ")}. Starting with the rest. Tap Start getting dressed.`,
+          );
           return;
         }
         startWithIds(ids, byId);
       } catch {
         if (!cancelled) {
+          setLoadError(true);
           setPhase("need-outfit");
-          setStatus("Couldn't load the closet. Check your connection and reload.");
+          setStatus("Couldn't load the closet. Check your connection, then reload.");
         }
       }
     })();
@@ -153,13 +175,7 @@ export default function DressPage() {
   }, []);
 
   function startWithIds(ids: string[], byId: Record<string, ClosetView>) {
-    const ordered = orderSteps(
-      ids.map((id) => {
-        const item = byId[id];
-        return { id, slot: slotForType(item.type), layer: item.layer, nickname: item.nickname };
-      }),
-    );
-    setDress(createDressState(ordered));
+    setDress(createDressState(orderSteps(ids.map((id) => byId[id]))));
     setPhase("ready");
     setStatus("Outfit ready. Tap Start getting dressed, then tap anywhere to check each item.");
   }
@@ -387,7 +403,12 @@ export default function DressPage() {
         setStatus("Your closet can't make a full outfit yet. Add clothes first.");
         return;
       }
-      const ids = body.outfits?.[0]?.item_ids ?? [];
+      const ids = (body.outfits?.[0]?.item_ids ?? []).filter((id) => itemsRef.current[id]?.type);
+      if (ids.length === 0) {
+        setStatus("That outfit isn't in the closet anymore. Try another occasion.");
+        return;
+      }
+      setSkippedIds([]);
       startWithIds(ids, itemsRef.current);
     } catch (err) {
       setStatus(err instanceof Error ? `Couldn't pick an outfit: ${err.message}` : "Couldn't pick an outfit.");
@@ -426,7 +447,23 @@ export default function DressPage() {
 
       {phase === "loading" && <p className="text-lg">Loading your closet…</p>}
 
-      {phase === "need-outfit" && (
+      {phase === "need-outfit" && loadError && wantedIds ? (
+        <section aria-label="Closet failed to load" className="flex flex-col gap-4">
+          <p className="text-lg">Couldn&apos;t load the closet. Check your connection, then reload.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text)"
+          >
+            Reload
+          </button>
+          <Link href="/today" className="text-lg underline">
+            Pick an outfit on Today instead
+          </Link>
+        </section>
+      ) : null}
+
+      {phase === "need-outfit" && !(loadError && wantedIds) && (
         <section aria-label="Pick an outfit by voice" className="flex flex-col gap-4">
           <p className="text-lg">Tell me the occasion and I&apos;ll pick an outfit to dress you in.</p>
           <VoiceButton
@@ -442,6 +479,13 @@ export default function DressPage() {
             Or pick an outfit on Today first
           </Link>
         </section>
+      )}
+
+      {skippedIds.length > 0 && (phase === "ready" || phase === "guiding") && (
+        <p className="text-lg text-(--text-muted)">
+          Some items in this outfit couldn&apos;t be loaded: {skippedIds.join(", ")}. Continuing
+          with the rest.
+        </p>
       )}
 
       {phase === "ready" && (

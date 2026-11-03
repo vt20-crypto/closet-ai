@@ -668,7 +668,7 @@ export default function TodayPage() {
                 ? `${day} · ${formatTemp(weather.highC)} · ${occasionWord}`
                 : weather
                   ? `${day} · ${formatTemp(weather.highC)}`
-                  : `Outfit ${index + 1}`;
+                  : null;
             return (
               <article
                 key={outfit.key}
@@ -678,17 +678,11 @@ export default function TodayPage() {
                 <h2 className="font-display text-2xl">
                   Outfit {index + 1} of {page.length}
                 </h2>
-                <p className="self-start">
-                  <Link
-                    href={`/dress?ids=${outfit.item_ids.join(",")}`}
-                    className="inline-block min-h-11 px-1 py-2 text-lg underline"
-                  >
-                    Get dressed with me
-                  </Link>
-                </p>
-                <p className="self-start">
-                  <Tape label={tapeText} seedId={outfit.key} />
-                </p>
+                {tapeText && (
+                  <p className="self-start">
+                    <Tape label={tapeText} seedId={outfit.key} />
+                  </p>
+                )}
                 {outfit.source === "rules" ? (
                   <div className="self-start">
                     <button
@@ -734,6 +728,12 @@ export default function TodayPage() {
                     </li>
                   ))}
                 </ul>
+                <Link
+                  href={`/dress?ids=${outfit.item_ids.join(",")}`}
+                  className="flex min-h-14 w-full items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold"
+                >
+                  Get dressed with me
+                </Link>
                 <p className="text-lg">{outfit.reason}</p>
                 {weather && <p className="text-(--text-muted)">{outfit.weather_note}</p>}
               </article>

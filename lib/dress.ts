@@ -1,4 +1,5 @@
-import type { OutfitCategory } from "./outfits.ts";
+import { tapeLabel } from "./labels.ts";
+import { slotForType, type OutfitCategory } from "./outfits.ts";
 
 /**
  * Pure get-dressed state machine. Dressing order is fixed and deterministic:
@@ -25,6 +26,37 @@ export interface DressItem {
   slot: OutfitCategory;
   layer: string;
   nickname: string;
+}
+
+/**
+ * Minimal ClosetItem shape the mapper reads. Tags stay nested, exactly as
+ * GET /api/closet returns them — never hand-flattened.
+ */
+export interface ClosetItemLike {
+  id: string;
+  tags: {
+    type: string;
+    primary_color: string;
+    nickname?: string | null;
+    layer: string;
+  } | null;
+}
+
+/**
+ * Flatten a closet item for dressing order. Defensive: missing tags fall
+ * back to type "other" (slot "other", sorted last), missing nicknames fall
+ * back to the tape label "<color> <type>".
+ */
+export function toDressItem(item: ClosetItemLike): DressItem {
+  const tags = item.tags ?? { type: "", primary_color: "", nickname: null, layer: "" };
+  const type = typeof tags.type === "string" && tags.type ? tags.type : "other";
+  const color = typeof tags.primary_color === "string" && tags.primary_color ? tags.primary_color : "unknown";
+  return {
+    id: item.id,
+    slot: slotForType(type),
+    layer: typeof tags.layer === "string" && tags.layer ? tags.layer : "base",
+    nickname: tapeLabel({ nickname: tags.nickname, primary_color: color, type }),
+  };
 }
 
 function stepRank(item: DressItem): number {
