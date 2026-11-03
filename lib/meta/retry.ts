@@ -94,7 +94,7 @@ export function logModel404Retry(context: string, retryIndex: number, err: unkno
   const message = errorMessage(err).slice(0, 200).replace(/\s+/g, " ");
   const requestId = getHeader(err, "x-request-id") ?? "-";
   console.log(
-    `meta transient_model_404 context=${context} retry=${retryIndex + 1}/3 ` +
+    `meta transient_model_404 context=${context} retry=${retryIndex + 1}/${MODEL_404_RETRY_DELAYS_MS.length} ` +
       `status=${status} message=${JSON.stringify(message)} request_id=${requestId}`,
   );
 }

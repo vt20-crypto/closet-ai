@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { listItems } from "@/lib/closet";
 import {
   createRetryBudget,
-  isMetaApiError,
+  isTransientModel404,
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
@@ -78,10 +78,11 @@ export async function POST(request: Request) {
     const lon = cleanNumber(body.lon);
     const city = cleanText(body.city);
     const venue = destination ?? occasionText;
-    // One 25s retry budget shared by the dress search and the pick.
-    // Date.now-based: sleepWithinBudget compares against Date.now(), so a
-    // performance.now() value here would silently disable every retry.
-    const retryBudget = createRetryBudget(Date.now() + 25_000);
+    // Separate budgets so dress can never starve the pick. Date.now-based:
+    // sleepWithinBudget compares against Date.now(), so a performance.now()
+    // value here would silently disable every retry.
+    const dressBudget = createRetryBudget(Date.now() + 8_000);
+    const pickBudget = createRetryBudget(Date.now() + 25_000);
 
     let weatherMs = 0;
     let dressMs = 0;
@@ -104,7 +105,7 @@ export async function POST(request: Request) {
     const dressPromise = (async () => {
       const t = performance.now();
       try {
-        return venue ? await fetchDressCode(venue, retryBudget) : null;
+        return venue ? await fetchDressCode(venue, dressBudget) : null;
       } finally {
         dressMs = Math.round(performance.now() - t);
       }
@@ -138,7 +139,7 @@ export async function POST(request: Request) {
       dressCodeNote: dressCode?.note ?? null,
       excludeKeys: [...excludeKeys],
       retryProblems: null as string | null,
-      budget: retryBudget,
+      budget: pickBudget,
     };
 
     const tSpark = performance.now();
@@ -157,9 +158,12 @@ export async function POST(request: Request) {
         picked = valid;
       }
     } catch (err) {
-      // Spark pick failed (Meta outage): deterministic rule-based fallback
-      // instead of an error. Anything non-Meta still throws to the 500 path.
-      if (!isMetaApiError(err)) throw err;
+      // Rule fallback only on outage signatures (model 404 / 429 / 5xx).
+      // 400/401 and anything non-Meta throw to the 500 path as real errors.
+      const status = (err as { status?: number })?.status;
+      const outage =
+        isTransientModel404(err) || status === 429 || (typeof status === "number" && status >= 500);
+      if (!outage) throw err;
       console.log(`outfits pick failed, using rule fallback: ${(err as Error).message.slice(0, 120)}`);
       const fbItems = items.map((item) => ({
         id: item.id,
@@ -173,12 +177,15 @@ export async function POST(request: Request) {
           nickname: item.tags.nickname ?? "",
         },
       }));
+      // Seed = request date + exclude count: each Shuffle surfaces new combos.
+      const ruleSeed = `${new Date().toISOString().slice(0, 10)}:${excludeKeys.size}`;
       picked = fallbackOutfits(
         fbItems,
         weather ? { highC: weather.highC, lowC: weather.lowC } : { highC: 20, lowC: 14 },
         mood,
         occasionChip,
         [...excludeKeys],
+        ruleSeed,
       ).map((o) => ({ ...o, weather_note: "", key: outfitKey(o.item_ids) }));
       source = "rules";
     }
@@ -223,7 +230,12 @@ export async function POST(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Outfit picking failed.";
     console.log(`outfits ERROR ${message.slice(0, 160)}`);
-    if (isMetaApiError(err)) {
+    // Only outage signatures become the friendly hiccup; 400/401 and other
+    // failures surface with their real message.
+    const status = (err as { status?: number })?.status;
+    const outage =
+      isTransientModel404(err) || status === 429 || (typeof status === "number" && status >= 500);
+    if (outage) {
       return NextResponse.json(
         { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
         { status: 500 },

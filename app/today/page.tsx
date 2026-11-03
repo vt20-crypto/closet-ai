@@ -96,6 +96,7 @@ export default function TodayPage() {
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
   const [heard, setHeard] = useState<string | null>(null);
   const [source, setSource] = useState<"ai" | "rules">("ai");
+  const [exhausted, setExhausted] = useState(false);
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -139,6 +140,7 @@ export default function TodayPage() {
     setBusy(true);
     setStatus(label);
     setRetryAction(null);
+    setExhausted(false);
     const hiccupTimer = window.setTimeout(
       () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
       8000,
@@ -181,17 +183,21 @@ export default function TodayPage() {
         return null;
       }
       setMissing([]);
-      setSource(body.source === "rules" ? "rules" : "ai");
       const fresh = body.outfits ?? [];
       if (fresh.length === 0) {
         window.clearTimeout(hiccupTimer);
+        // Source stays untouched on empty responses; exhaustion gets a card.
+        const done = exclude.length > 0;
+        setExhausted(done);
+        if (done) setOutfits([]);
         setStatus(
-          exclude.length > 0
-            ? "That's every combination for this mood — try a different one."
+          done
+            ? "That's every combination — see below."
             : "No outfits came back. Try again or change the mood.",
         );
         return null;
       }
+      setSource(body.source === "rules" ? "rules" : "ai");
       window.clearTimeout(hiccupTimer);
       const items = body.items ?? {};
       const nextWeather = body.weather ?? null;
@@ -500,6 +506,22 @@ export default function TodayPage() {
           <p className="text-lg">No dress code found online.</p>
         )
       ) : null}
+
+      {exhausted && outfits.length === 0 && missing.length === 0 && (
+        <section
+          aria-label="No more combinations"
+          className="flex flex-col gap-3 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
+        >
+          <h2 className="font-display text-2xl">You&apos;ve seen every combination</h2>
+          <p className="text-lg">Add more clothes or change the mood for fresh picks.</p>
+          <Link
+            href="/capture"
+            className="inline-block min-h-14 rounded-full bg-(--primary) px-6 py-4 text-center text-xl font-semibold text-(--primary-text)"
+          >
+            Add clothes
+          </Link>
+        </section>
+      )}
 
       {outfits.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-8">

@@ -58,8 +58,10 @@ export default function TabBar() {
   return (
     <nav
       aria-label="Primary"
-      // Dark espresso in BOTH modes; cream labels, tomato active tab.
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--tabbar-bg) bg-(--tabbar-bg) pb-[env(safe-area-inset-bottom)] text-(--tabbar-text) md:hidden"
+      // Dark espresso in BOTH modes; cream labels, tomato active tab. The
+      // ::after slab extends the background below the bar so nothing of the
+      // page shows through during scroll or rubber-band bounce.
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--tabbar-bg) bg-(--tabbar-bg) pb-[env(safe-area-inset-bottom)] text-(--tabbar-text) after:absolute after:top-full after:right-0 after:left-0 after:h-[120px] after:bg-(--tabbar-bg) after:content-[''] md:hidden"
     >
       <div className="mx-auto grid w-full max-w-2xl grid-cols-4 gap-1 px-2 pt-1 md:max-w-[960px]">
         {TABS.map((tab) => {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { fallbackOutfits, type FallbackItem } from "./fallbackOutfits.ts";
+import { fallbackOutfits, seededShuffle, type FallbackItem } from "./fallbackOutfits.ts";
 
 function item(id: string, tags: Partial<FallbackItem["tags"]> & { type: string }): FallbackItem {
   return {
@@ -68,4 +68,31 @@ test("fallback needs shoes when the closet has them", () => {
 test("fallback returns [] when no complete outfit exists", () => {
   const out = fallbackOutfits([item("t1", { type: "shirt" })], { highC: 20, lowC: 14 }, null, null);
   assert.deepEqual(out, []);
+});
+
+test("seededShuffle is deterministic per seed", () => {
+  const arr = ["a", "b", "c", "d", "e", "f"];
+  assert.deepEqual(seededShuffle(arr, "2026-11-03:0"), seededShuffle(arr, "2026-11-03:0"));
+  assert.deepEqual(seededShuffle(arr, "2026-11-03:1"), seededShuffle(arr, "2026-11-03:1"));
+  assert.notDeepEqual(seededShuffle(arr, "2026-11-03:0"), seededShuffle(arr, "2026-11-03:1"));
+});
+
+test("fallback uses all slots and varies by seed", () => {
+  const big: FallbackItem[] = [
+    item("t1", { type: "shirt" }),
+    item("t2", { type: "shirt" }),
+    item("t3", { type: "sweater" }),
+    item("b1", { type: "jeans" }),
+    item("b2", { type: "pants" }),
+    item("b3", { type: "shorts" }),
+    item("s1", { type: "sneakers" }),
+  ];
+  const firsts = new Set<string>();
+  for (const seed of ["2026-11-03:0", "2026-11-03:1", "2026-11-03:2", "2026-11-03:3"]) {
+    const out = fallbackOutfits(big, { highC: 20, lowC: 14 }, null, null, [], seed);
+    assert.ok(out.length === 3, `seed ${seed} yields 3`);
+    firsts.add(out[0].item_ids.join("+"));
+  }
+  // 9 combos exist; different seeds must surface different first picks.
+  assert.ok(firsts.size > 1, [...firsts].join(" | "));
 });

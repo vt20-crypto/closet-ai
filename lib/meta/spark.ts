@@ -6,6 +6,7 @@ import { getMetaClient } from "./client";
 import {
   isTransientModel404,
   sleepForTransient404,
+  sleepWithinBudget,
   withTransient404Retry,
   type ModelRetryCounters,
   type RetryBudget,
@@ -75,27 +76,43 @@ export async function fetchDressCode(
   budget?: RetryBudget,
 ): Promise<DressCodeNote | null> {
   const api = getMetaClient();
-  try {
-    const res = await withTransient404Retry(
-      "spark dress",
-      () =>
-        api.responses.create(
-          {
-            model: MODEL,
-            reasoning: { effort: "low" },
-            tools: [{ type: "web_search" }],
-            input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
-          },
-          { timeout: 10_000, maxRetries: 0 },
-        ),
-      undefined,
-      budget,
-    );
-    const note = (res.output_text ?? "").trim();
-    const urls = citationUrls(res.output);
-    return { note: note || null, url: urls[0] ?? null, citations: urls.length };
-  } catch {
-    return null;
+  // Own policy, separate from the pick: a 404 (outage signature) skips dress
+  // immediately so it can never starve the pick; 429/5xx get one retry.
+  // Any failure returns null so the caller skips the dress note.
+  let retried = false;
+  for (;;) {
+    try {
+      const res = await api.responses.create(
+        {
+          model: MODEL,
+          reasoning: { effort: "low" },
+          tools: [{ type: "web_search" }],
+          input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
+        },
+        { timeout: 10_000, maxRetries: 0 },
+      );
+      const note = (res.output_text ?? "").trim();
+      const urls = citationUrls(res.output);
+      return { note: note || null, url: urls[0] ?? null, citations: urls.length };
+    } catch (err) {
+      if (isTransientModel404(err)) return null;
+      const status = (err as { status?: number })?.status;
+      const retryable = status === 429 || (typeof status === "number" && status >= 500);
+      if (retryable && !retried) {
+        retried = true;
+        const raw = (err as { headers?: unknown })?.headers;
+        const headerValue =
+          raw && typeof (raw as Headers).get === "function"
+            ? (raw as Headers).get("retry-after")
+            : null;
+        const secs = headerValue ? Number(headerValue) : NaN;
+        const delay = Number.isFinite(secs) ? Math.max(0, secs * 1000) : 1000;
+        if (budget && !(await sleepWithinBudget(delay, budget))) return null;
+        if (!budget) await sleep(delay);
+        continue;
+      }
+      return null;
+    }
   }
 }
 
