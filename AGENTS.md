@@ -57,6 +57,9 @@ Built for the **Meta Global AI Developer Hackathon** (Indie track, theme "Build 
 ## Accessibility (from day one, not later)
 Semantic HTML, real `<button>`s with labels, visible focus, `aria-live` regions for spoken/status updates, large tap targets, high-contrast text, and it works with VoiceOver.
 
+## Theme
+All new UI uses the color tokens in `app/globals.css` (`bg-(--surface)`, `text-(--text)`, `border-(--border)`, etc.), never hard-coded colors or `dark:` classes. Disabled controls use `--disabled-bg`/`--disabled-text`, not opacity alone. Transparent cutouts sit on the shared `.checkerboard` class (stays light in both modes). Check new text pairs with `node scripts/check-contrast.mjs` (text ≥ 4.5:1, borders/focus ≥ 3:1).
+
 ## Working style
 - Use `/plan` for anything bigger than a small fix and wait for approval.
 - Keep diffs small and focused. One feature per task.

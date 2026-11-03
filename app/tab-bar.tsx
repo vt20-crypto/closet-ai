@@ -58,9 +58,8 @@ export default function TabBar() {
   return (
     <nav
       aria-label="Primary"
-      // Solid contrasting surface in both modes: white/black light,
-      // neutral-900/white dark. Never translucent, never page-black.
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-neutral-300 bg-white text-black md:hidden dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
+      // Solid token surface in both modes. Never translucent.
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--border) bg-(--surface) text-(--text) md:hidden"
     >
       <div className="mx-auto grid w-full max-w-2xl md:max-w-[960px] grid-cols-4 gap-1 px-2 pb-[env(safe-area-inset-bottom)] pt-1">
         {TABS.map((tab) => {
@@ -72,7 +71,7 @@ export default function TabBar() {
               href={tab.href}
               aria-current={active ? "page" : undefined}
               className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl text-base ${
-                active ? "bg-neutral-200 font-semibold dark:bg-neutral-800" : ""
+                active ? "bg-(--surface-2) font-semibold" : ""
               }`}
             >
               <Icon />

@@ -1,1 +1,83 @@
 @import "tailwindcss";
+
+/* Class-driven dark variant (forward-compat insurance; the token
+   utilities below carry theming, so no theme-prefixed color classes remain). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root,
+html[data-theme="light"] {
+  --background: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --text: #000000;
+  --text-muted: #525252;
+  --border: #737373;
+  --primary: #000000;
+  --primary-text: #ffffff;
+  --danger: #b91c1c;
+  --disabled-bg: #e5e5e5;
+  --disabled-text: #525252;
+  --focus-ring: #2563eb;
+  --checkerboard-light: #ffffff;
+  --checkerboard-dark: #e2e2e2;
+}
+
+html[data-theme="dark"] {
+  --background: #000000;
+  --surface: #171717;
+  --surface-2: #262626;
+  --text: #ffffff;
+  --text-muted: #d4d4d4;
+  --border: #6b6b6b;
+  --primary: #ffffff;
+  --primary-text: #000000;
+  --danger: #fca5a5;
+  --disabled-bg: #262626;
+  --disabled-text: #d4d4d4;
+  --focus-ring: #93c5fd;
+  --checkerboard-light: #ffffff;
+  --checkerboard-dark: #e2e2e2;
+}
+
+/* Auto (default): follow the OS. Explicit light/dark above win. */
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] {
+    --background: #000000;
+    --surface: #171717;
+    --surface-2: #262626;
+    --text: #ffffff;
+    --text-muted: #d4d4d4;
+    --border: #6b6b6b;
+    --primary: #ffffff;
+    --primary-text: #000000;
+    --danger: #fca5a5;
+  --disabled-bg: #262626;
+    --disabled-text: #d4d4d4;
+    --focus-ring: #93c5fd;
+    --checkerboard-light: #ffffff;
+    --checkerboard-dark: #e2e2e2;
+  }
+}
+
+/* One visible keyboard focus indicator for every control. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Light checkerboard behind transparent cutouts. Stays light in both
+   modes so dark garments remain visible in dark mode. */
+.checkerboard {
+  background-color: var(--checkerboard-light);
+  background-image:
+    linear-gradient(45deg, var(--checkerboard-dark) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checkerboard-dark) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checkerboard-dark) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checkerboard-dark) 75%);
+  background-size: 20px 20px;
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0px;
+}

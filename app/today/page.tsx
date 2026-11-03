@@ -218,10 +218,10 @@ export default function TodayPage() {
   }
 
   const chipClass = (selected: boolean) =>
-    `min-h-12 rounded-full border px-5 text-lg capitalize disabled:opacity-50 ${
+    `min-h-12 rounded-full border px-5 text-lg capitalize disabled:text-(--disabled-text) ${
       selected
-        ? "border-black bg-black font-semibold text-white dark:border-white dark:bg-white dark:text-black"
-        : "border-neutral-400"
+        ? "border-(--primary) bg-(--primary) font-semibold text-(--primary-text)"
+        : "border-(--border)"
     }`;
 
   return (
@@ -270,7 +270,7 @@ export default function TodayPage() {
             onChange={(event) => setOccasionText(event.target.value)}
             placeholder="e.g. rooftop birthday"
             maxLength={120}
-            className="min-h-14 rounded-2xl border border-neutral-400 bg-transparent px-4"
+            className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
           />
         </label>
         <label className="flex flex-col gap-2 text-lg">
@@ -281,7 +281,7 @@ export default function TodayPage() {
             onChange={(event) => setDestination(event.target.value)}
             placeholder="e.g. The French Laundry"
             maxLength={120}
-            className="min-h-14 rounded-2xl border border-neutral-400 bg-transparent px-4"
+            className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
           />
         </label>
       </section>
@@ -293,7 +293,7 @@ export default function TodayPage() {
             type="button"
             disabled={busy || locating}
             onClick={useMyLocation}
-            className="min-h-14 rounded-2xl border border-neutral-400 px-6 text-lg font-semibold disabled:opacity-50"
+            className="min-h-14 rounded-2xl border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
           >
             {coords ? "Location set ✓" : locating ? "Locating…" : "Use my location"}
           </button>
@@ -305,7 +305,7 @@ export default function TodayPage() {
               onChange={(event) => handleCityChange(event.target.value)}
               placeholder="e.g. Lisbon"
               maxLength={120}
-              className="min-h-14 rounded-2xl border border-neutral-400 bg-transparent px-4"
+              className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
             />
           </label>
         </div>
@@ -316,7 +316,7 @@ export default function TodayPage() {
           type="button"
           disabled={busy || !mood || !occasion}
           onClick={() => void fetchOutfits([], "Getting today's outfits…")}
-          className="min-h-16 flex-1 rounded-2xl bg-black text-xl font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+          className="min-h-16 flex-1 rounded-2xl bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           {busy ? "Picking…" : "Get outfits"}
         </button>
@@ -326,7 +326,7 @@ export default function TodayPage() {
             disabled={busy}
             onClick={() => void fetchOutfits(shownKeys, "Shuffling to new combinations…")}
             aria-label="Shuffle to new outfit combinations"
-            className="min-h-16 rounded-2xl border border-neutral-400 px-6 text-xl font-semibold disabled:opacity-50"
+            className="min-h-16 rounded-2xl border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
           >
             Shuffle
           </button>
@@ -344,7 +344,7 @@ export default function TodayPage() {
             setRetryAction(null);
             rerun();
           }}
-          className="min-h-14 rounded-2xl bg-black text-lg font-semibold text-white dark:bg-white dark:text-black"
+          className="min-h-14 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           Try again
         </button>
@@ -357,7 +357,7 @@ export default function TodayPage() {
           </p>
           <Link
             href="/capture"
-            className="inline-block min-h-14 rounded-2xl bg-black px-6 py-4 text-center text-xl font-semibold text-white dark:bg-white dark:text-black"
+            className="inline-block min-h-14 rounded-2xl bg-(--primary) px-6 py-4 text-center text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
           >
             Add clothes
           </Link>
@@ -391,7 +391,7 @@ export default function TodayPage() {
             <article
               key={outfit.key}
               aria-label={`Outfit ${index + 1} of ${outfits.length}`}
-              className="flex flex-col gap-3 rounded-2xl border border-neutral-300 p-4 dark:border-neutral-700"
+              className="flex flex-col gap-3 rounded-2xl border border-(--border) p-4"
             >
               <h2 className="text-2xl font-bold">
                 Outfit {index + 1} of {outfits.length}
@@ -406,7 +406,7 @@ export default function TodayPage() {
                         src={card.cutoutUrl}
                         alt={`${card.type} in ${card.primary_color}`}
                         loading="lazy"
-                        className="w-full rounded-xl bg-neutral-100 object-contain dark:bg-neutral-800"
+                        className="w-full rounded-xl checkerboard object-contain"
                       />
                       <p className="pt-1 text-base capitalize">{card.type}</p>
                     </li>

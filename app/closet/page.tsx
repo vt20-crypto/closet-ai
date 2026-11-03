@@ -95,13 +95,13 @@ export default function ClosetPage() {
             {group.map((item) => (
               <li
                 key={item.id}
-                className="flex flex-col gap-2 rounded-2xl border border-neutral-300 p-3 dark:border-neutral-700"
+                className="flex flex-col gap-2 rounded-2xl border border-(--border) p-3"
               >
                 <img
                   src={item.cutoutUrl}
                   alt={`${item.tags.type} in ${item.tags.primary_color}`}
                   loading="lazy"
-                  className="w-full rounded-xl bg-neutral-100 object-contain dark:bg-neutral-800"
+                  className="w-full rounded-xl checkerboard object-contain"
                 />
                 <p className="text-lg font-semibold capitalize">{item.tags.type}</p>
                 <p className="capitalize">{item.tags.primary_color}</p>
@@ -151,7 +151,7 @@ export default function ClosetPage() {
                   disabled={deleting === item.id}
                   onClick={() => void remove(item.id, item.tags.type)}
                   aria-label={`Delete ${item.tags.type} in ${item.tags.primary_color}`}
-                  className="min-h-14 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+                  className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   {deleting === item.id ? "Deleting…" : "Delete"}
                 </button>

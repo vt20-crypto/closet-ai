@@ -60,7 +60,7 @@ export default function HealthStatus() {
             setState({ status: "loading" });
             setAttempt((n) => n + 1);
           }}
-          className="min-h-11 rounded-full border border-neutral-400 px-4 text-base"
+          className="min-h-11 rounded-full border border-(--border) bg-(--surface) px-4 text-base"
         >
           Recheck
         </button>

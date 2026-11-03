@@ -198,7 +198,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
       </p>
       <div
         ref={containerRef}
-        className="relative w-full touch-none overflow-hidden rounded-2xl border border-neutral-300 select-none dark:border-neutral-700"
+        className="relative w-full touch-none overflow-hidden rounded-2xl border border-(--border) select-none"
         style={{ touchAction: "none" }}
         onPointerDown={(event) => {
           if ((event.target as HTMLElement).closest("button") || working || !loaded) return;
@@ -264,7 +264,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={!loaded || working}
           onClick={() => void applyCrop()}
-          className="min-h-14 flex-1 rounded-2xl bg-black text-lg font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black"
+          className="min-h-14 flex-1 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           {working ? "Cropping…" : "Use crop"}
         </button>
@@ -272,7 +272,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={working}
           onClick={() => setSelection(DEFAULT_BOX)}
-          className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+          className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
         >
           Reset
         </button>
@@ -280,7 +280,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={working}
           onClick={() => onDone(null)}
-          className="min-h-14 flex-1 rounded-2xl border border-neutral-400 text-lg font-semibold disabled:opacity-50"
+          className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
         >
           Skip
         </button>
