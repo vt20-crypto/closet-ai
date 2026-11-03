@@ -126,6 +126,7 @@ export async function POST(request: Request) {
       items: Record<string, CachedItemCard>;
       weather: WeatherSummary | null;
       dressCode: { note: string | null; url: string | null; citations: number } | null;
+      source: "ai" | "rules";
     }
     const cached = await readCache<CachedResponse>(outfitCacheKey, 30 * 60 * 1000);
     const cachedAll = cached.hit && cached.data ? cached.data.outfits : [];
@@ -144,6 +145,10 @@ export async function POST(request: Request) {
     const eligibleCached = cachedAll.filter((o) => !excludeKeys.has(o.key));
     if (eligibleCached.length > 0 && cached.data) {
       cacheStatus = "hit";
+      // The stored source belongs to these outfits: a cached rules fallback
+      // must never be re-served as AI output. Pre-source caches read as ai,
+      // which is all they ever stored (fallbacks are never cached).
+      source = cached.data.source === "rules" ? "rules" : "ai";
       // Score gate: strong outfits first; relaxes to the top 2 at/above 5
       // so the result is never empty when valid outfits exist.
       const gate = applyScoreThreshold(eligibleCached, threshold);
@@ -243,10 +248,11 @@ export async function POST(request: Request) {
             }
           }
           await writeCache(outfitCacheKey, {
-            outfits: picked,
+            outfits: allValid,
             items: storeCards,
             weather,
             dressCode,
+            source,
           } satisfies CachedResponse);
         }
       } catch (err) {

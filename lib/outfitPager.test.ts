@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   PAGE_SIZE,
   appendMore,
+  applyMoreIdeas,
   createPager,
   currentPage,
   hasMore,
@@ -86,5 +87,49 @@ describe("outfitPager", () => {
     assert.deepEqual(currentPage(pager), []);
     assert.equal(hasMore(pager), false);
     assert.deepEqual(pageRange(pager), { from: 1, to: 0 });
+  });
+
+  it("more-ideas keeps each card's own source and counts only new looks", () => {
+    const ai: { key: string; source: string }[] = [
+      { key: "a", source: "ai" },
+      { key: "b", source: "ai" },
+    ];
+    let pager = createPager(ai);
+    const mixed: { key: string; source: string }[] = [
+      { key: "b", source: "rules" },
+      { key: "h", source: "rules" },
+      { key: "i", source: "ai" },
+    ];
+    const result = applyMoreIdeas(pager, mixed);
+    assert.equal(result.depleted, false);
+    assert.equal(result.added, 2);
+    pager = result.state;
+    // Seen combos are never re-presented as new, even from a rules response.
+    assert.deepEqual(
+      pager.list.map((p) => [p.key, (p as { source: string }).source]),
+      [
+        ["a", "ai"],
+        ["b", "ai"],
+        ["h", "rules"],
+        ["i", "ai"],
+      ],
+    );
+    assert.deepEqual(
+      currentPage(pager).map((p) => (p as { source: string }).source),
+      ["ai", "ai", "rules"],
+    );
+    assert.deepEqual(pager.seen, ["a", "b", "h"]);
+  });
+
+  it("empty or all-seen more-ideas depletes without touching the pager", () => {
+    const pager = createPager(keys.slice(0, 3));
+    const empty = applyMoreIdeas(pager, []);
+    assert.equal(empty.depleted, true);
+    assert.equal(empty.added, 0);
+    assert.equal(empty.state, pager);
+    const dupes = applyMoreIdeas(pager, [o("a"), o("c")]);
+    assert.equal(dupes.depleted, true);
+    assert.equal(dupes.added, 0);
+    assert.equal(dupes.state, pager);
   });
 });

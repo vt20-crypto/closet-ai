@@ -7,7 +7,7 @@ import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import { slotRank } from "@/lib/outfits";
 import {
-  appendMore,
+  applyMoreIdeas,
   createPager,
   currentPage,
   hasMore,
@@ -30,6 +30,8 @@ interface OutfitView {
   reason: string;
   weather_note: string;
   key: string;
+  /** Stamped client-side from the response that carried this card. */
+  source: "ai" | "rules";
 }
 
 interface ItemCard {
@@ -103,15 +105,14 @@ export default function TodayPage() {
   const [locating, setLocating] = useState(false);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
   const [heard, setHeard] = useState<string | null>(null);
-  const [source, setSource] = useState<"ai" | "rules">("ai");
   const [relaxed, setRelaxed] = useState(false);
-  const [exhausted, setExhausted] = useState(false);
+  const [depletedKey, setDepletedKey] = useState<string | null>(null);
   const [voiceRequested, setVoiceRequested] = useState(false);
 
   // The cards on screen: exactly the pager's current page (at most 3).
   const page = pager ? currentPage(pager) : [];
   const showShuffle = pager !== null && hasMore(pager);
-  const showMoreIdeas = pager !== null && !hasMore(pager) && !exhausted;
+  const showMoreIdeas = pager !== null && !hasMore(pager);
 
   // Get outfits unlocks with any single input or a completed voice request.
   const canRun =
@@ -120,6 +121,19 @@ export default function TodayPage() {
     occasionText.trim() !== "" ||
     destination.trim() !== "" ||
     voiceRequested;
+
+  // "More ideas" stays disabled after an empty round until the inputs change:
+  // depletion records the inputs key it happened under.
+  const inputsKey = [
+    mood ?? "",
+    occasion ?? "",
+    occasionText,
+    destination,
+    city,
+    coords?.lat ?? "",
+    coords?.lon ?? "",
+  ].join("|");
+  const moreDepleted = depletedKey !== null && depletedKey === inputsKey;
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -142,12 +156,19 @@ export default function TodayPage() {
     }
   }
 
-  /** Status line for a pager: "N looks for you" on page 1, "Look 4–6" after. */
+  /** Status line names each card's own origin: AI picks vs quick picks. */
   function pageStatus(p: OutfitPagerState<OutfitView>): string {
+    const cards = currentPage(p);
+    const n = cards.length;
+    const rules = cards.filter((o) => o.source === "rules").length;
     const range = pageRange(p);
-    const n = currentPage(p).length;
-    if (range.from <= 1) return `${n} ${n === 1 ? "look" : "looks"} for you.`;
-    return `Look ${range.from}–${range.to}.`;
+    const head =
+      range.from <= 1
+        ? `${n} ${n === 1 ? "look" : "looks"} for you`
+        : `Look ${range.from}–${range.to}`;
+    if (rules === 0) return `${head}, picked by Meta AI.`;
+    if (rules === n) return `AI was unavailable, here are ${n} quick picks.`;
+    return `${head} — ${n - rules} picked by Meta AI, ${rules} quick picks.`;
   }
 
   async function fetchOutfits(
@@ -175,7 +196,7 @@ export default function TodayPage() {
     // "More ideas" appends; only a fresh pick resets the pager and flags.
     if (mode === "fresh") {
       setPager(null);
-      setExhausted(false);
+      setDepletedKey(null);
       setRelaxed(false);
     }
     const hiccupTimer = window.setTimeout(
@@ -230,26 +251,21 @@ export default function TodayPage() {
         window.clearTimeout(hiccupTimer);
         setWeather(nextWeather);
         setDressCode(nextDress);
+        // Stamp every card with its own response's source; nothing carries over.
+        const bodySource: "ai" | "rules" = body.source === "rules" ? "rules" : "ai";
+        const stamped = fresh.map((o) => ({ ...o, source: bodySource }));
         // Appending to a pager captured before the await keeps every shown combo excluded.
-        const base = pager;
-        if (!base || fresh.length === 0) {
-          setExhausted(true);
-          setStatus("That's all the strong looks for this — see below.");
+        const folded = pager ? applyMoreIdeas(pager, stamped) : null;
+        if (!folded || folded.depleted) {
+          setDepletedKey(inputsKey);
+          setStatus("No more good looks for this combination. Try another mood or occasion.");
           return null;
         }
-        const grown = appendMore(base, fresh);
-        if (grown === base) {
-          setExhausted(true);
-          setStatus("That's all the strong looks for this — see below.");
-          return null;
-        }
-        setPager(grown);
+        setPager(folded.state);
         const merged = { ...itemCards, ...(body.items ?? {}) };
         setItemCards(merged);
-        if (body.source === "rules") setSource("rules");
-        setExhausted(false);
-        setStatus(pageStatus(grown));
-        return { outfits: currentPage(grown), items: merged, weather: nextWeather, dressCode: nextDress };
+        setStatus(folded.added === 1 ? "1 new look." : `${folded.added} new looks.`);
+        return { outfits: currentPage(folded.state), items: merged, weather: nextWeather, dressCode: nextDress };
       }
       if (fresh.length === 0) {
         window.clearTimeout(hiccupTimer);
@@ -257,11 +273,12 @@ export default function TodayPage() {
         setStatus("No outfits came back. Try again or change the mood.");
         return null;
       }
-      setSource(body.source === "rules" ? "rules" : "ai");
+      // Stamp every card with its own response's source; nothing carries over.
+      const bodySource: "ai" | "rules" = body.source === "rules" ? "rules" : "ai";
       setRelaxed(body.relaxed === true);
       window.clearTimeout(hiccupTimer);
       const items = body.items ?? {};
-      const started = createPager(fresh);
+      const started = createPager(fresh.map((o) => ({ ...o, source: bodySource })));
       setPager(started);
       setItemCards(items);
       setWeather(nextWeather);
@@ -524,15 +541,15 @@ export default function TodayPage() {
         {showMoreIdeas && (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || moreDepleted}
             onClick={() => {
               if (!pager) return;
               void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
             }}
-            aria-label="Get more outfit ideas"
+            aria-label="More ideas, asks AI again"
             className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
           >
-            More ideas
+            More ideas (asks AI again)
           </button>
         )}
       </div>
@@ -588,26 +605,6 @@ export default function TodayPage() {
         )
       ) : null}
 
-      {exhausted && page.length > 0 && missing.length === 0 && (
-        <section
-          aria-label="No more strong looks"
-          className="flex flex-col gap-3 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
-        >
-          <h2 className="font-display text-2xl">That&apos;s all the strong looks for this</h2>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              if (!pager) return;
-              void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
-            }}
-            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
-          >
-            More ideas (may be less perfect)
-          </button>
-        </section>
-      )}
-
       {page.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-8">
           {relaxed && (
@@ -617,11 +614,6 @@ export default function TodayPage() {
                 Add clothes
               </Link>
             </div>
-          )}
-          {source === "rules" && (
-            <p className="self-start">
-              <Tape label="Quick pick, AI unavailable" seedId="quick-pick" />
-            </p>
           )}
           <button
             type="button"
@@ -659,6 +651,16 @@ export default function TodayPage() {
                 </h2>
                 <p className="self-start">
                   <Tape label={tapeText} seedId={outfit.key} />
+                </p>
+                <p className="self-start">
+                  <Tape
+                    label={
+                      outfit.source === "rules"
+                        ? "Quick pick, AI was unavailable"
+                        : "Picked by Meta AI"
+                    }
+                    seedId={`${outfit.key}-source`}
+                  />
                 </p>
                 <ul
                   className="grid grid-cols-2 gap-4 rounded-2xl bg-(--surface-2) p-4 md:grid-cols-3"

@@ -69,6 +69,28 @@ export function appendMore<T extends PagerOutfit>(
   return markSeen(grown, currentPage(grown).map((o) => o.key));
 }
 
+export interface MoreIdeasResult<T extends PagerOutfit> {
+  state: OutfitPagerState<T>;
+  /** Number of genuinely new combos appended (0 when depleted). */
+  added: number;
+  /** True when the response held nothing new: the button should disable. */
+  depleted: boolean;
+}
+
+/**
+ * Fold a "More ideas" server response into the pager. Only unseen combos
+ * are appended, so a rules fallback can never re-present seen combos as new.
+ */
+export function applyMoreIdeas<T extends PagerOutfit>(
+  state: OutfitPagerState<T>,
+  extra: T[],
+): MoreIdeasResult<T> {
+  if (extra.length === 0) return { state, added: 0, depleted: true };
+  const grown = appendMore(state, extra);
+  if (grown === state) return { state, added: 0, depleted: true };
+  return { state: grown, added: grown.list.length - state.list.length, depleted: false };
+}
+
 /** 1-based "Look 4–6" range for the current page. */
 export function pageRange<T extends PagerOutfit>(state: OutfitPagerState<T>): { from: number; to: number } {
   const page = currentPage(state);
