@@ -7,7 +7,9 @@ import {
   isTransientModel404,
   logModel404Retry,
   model404RetryDelayMs,
+  sleepWithinBudget,
   withTransient404Retry,
+  type RetryBudget,
 } from "./retry";
 
 const MODEL = "muse-spark-1.3";
@@ -102,7 +104,8 @@ function rejected(reason: string): GarmentTags {
  * Retry-After); a 400 content_policy_violation becomes a rejection.
  */
 export interface DressCodeNote {
-  note: string;
+  /** Null when the search ran fine but said nothing usable. */
+  note: string | null;
   url: string | null;
   /** How many url_citation annotations the search response carried. */
   citations: number;
@@ -114,24 +117,30 @@ export interface DressCodeNote {
  * from model text; no citation means no link. 10s timeout; any failure
  * returns null so the caller skips it.
  */
-export async function fetchDressCode(venue: string): Promise<DressCodeNote | null> {
+export async function fetchDressCode(
+  venue: string,
+  budget?: RetryBudget,
+): Promise<DressCodeNote | null> {
   const api = getMetaClient();
   try {
-    const res = await withTransient404Retry("spark dress", () =>
-      api.responses.create(
-        {
-          model: MODEL,
-          reasoning: { effort: "low" },
-          tools: [{ type: "web_search" }],
-          input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
-        },
-        { timeout: 10_000, maxRetries: 0 },
-      ),
+    const res = await withTransient404Retry(
+      "spark dress",
+      () =>
+        api.responses.create(
+          {
+            model: MODEL,
+            reasoning: { effort: "low" },
+            tools: [{ type: "web_search" }],
+            input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
+          },
+          { timeout: 10_000, maxRetries: 0 },
+        ),
+      undefined,
+      budget,
     );
     const note = (res.output_text ?? "").trim();
-    if (!note) return null;
     const urls = citationUrls(res.output);
-    return { note, url: urls[0] ?? null, citations: urls.length };
+    return { note: note || null, url: urls[0] ?? null, citations: urls.length };
   } catch {
     return null;
   }
@@ -179,6 +188,8 @@ export interface PickOutfitsInput {
   dressCodeNote: string | null;
   excludeKeys: string[];
   retryProblems: string | null;
+  /** Shared per-request retry deadline (never past route maxDuration - 5s). */
+  budget?: RetryBudget;
 }
 
 // Strict JSON schema for the outfit pick (no tools on this call).
@@ -239,13 +250,17 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   );
   // "minimal" is the shortest documented reasoning pass
   // (dev.meta.ai/docs/reasoning). The pick is latency-critical.
-  const res = await withTransient404Retry("spark outfits", () =>
-    api.responses.create({
-      model: MODEL,
-      reasoning: { effort: "minimal" },
-      input: parts.join("\n"),
-      text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
-    }),
+  const res = await withTransient404Retry(
+    "spark outfits",
+    () =>
+      api.responses.create({
+        model: MODEL,
+        reasoning: { effort: "minimal" },
+        input: parts.join("\n"),
+        text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
+      }),
+    undefined,
+    input.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
   return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
@@ -292,7 +307,7 @@ export function untaggedFallback(nouns: string[]): GarmentTags {
  */
 export async function tagGarment(
   imageRef: string,
-  opts?: { isPair?: boolean },
+  opts?: { isPair?: boolean; budget?: RetryBudget },
 ): Promise<TagResult> {
   const api = getMetaClient();
   const prompt = opts?.isPair ? BASE_PROMPT + PAIR_PROMPT : BASE_PROMPT;
@@ -327,11 +342,15 @@ export async function tagGarment(
         return { tags: rejected("content_policy_violation"), errored: false };
       }
       if (isTransientModel404(err)) {
-        if (retries404 >= 3) {
+        if (retries404 >= 4) {
           return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
         }
         logModel404Retry("spark tag", retries404, err);
-        await sleep(model404RetryDelayMs(retries404));
+        const delay = model404RetryDelayMs(retries404);
+        if (opts?.budget && !(await sleepWithinBudget(delay, opts.budget))) {
+          return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
+        }
+        if (!opts?.budget) await sleep(delay);
         retries404 += 1;
         continue;
       }

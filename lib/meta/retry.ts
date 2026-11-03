@@ -10,7 +10,40 @@
  * paths and are untouched by this rule.
  */
 
-export const MODEL_404_RETRY_DELAYS_MS = [500, 1000, 2000];
+export const MODEL_404_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+/** Machine-readable code for Meta-caused failures (UI shows friendly text). */
+export const META_UNAVAILABLE_CODE = "meta_unavailable";
+/** User-facing line for Meta outages. Never include raw API error text. */
+export const META_HICCUP_MESSAGE = "Meta's AI is having a hiccup.";
+
+/** True for errors raised by the Meta Model API (numeric SDK status). */
+export function isMetaApiError(err: unknown): boolean {
+  return typeof (err as { status?: unknown })?.status === "number";
+}
+
+/**
+ * A shared retry deadline. One budget per scan/request: every retrying call
+ * draws from the same clock so retries can't multiply (14 nouns × 4 sleeps).
+ */
+export interface RetryBudget {
+  deadline: number;
+}
+
+export function createRetryBudget(deadlineMs: number): RetryBudget {
+  return { deadline: deadlineMs };
+}
+
+/**
+ * Sleep up to ms without passing the budget deadline. Returns false when the
+ * budget is already spent (caller must give up, not retry).
+ */
+export async function sleepWithinBudget(ms: number, budget: RetryBudget): Promise<boolean> {
+  const remaining = budget.deadline - Date.now();
+  if (remaining <= 0) return false;
+  await sleep(Math.min(ms, remaining));
+  return Date.now() < budget.deadline;
+}
 
 /** True only for 404s whose message mentions the model. */
 export function isTransientModel404(err: unknown): boolean {
@@ -62,13 +95,15 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Run fn, retrying transient model-404s up to 3 times (500ms, 1s, 2s).
- * Any other error — or exhaustion — is rethrown to the caller's own handling.
+ * Run fn, retrying transient model-404s (1s, 2s, 4s, 8s by default).
+ * A shared budget caps total retry sleeping; when it is spent the error is
+ * rethrown. Any other error — or exhaustion — is rethrown to the caller.
  */
 export async function withTransient404Retry<T>(
   context: string,
   fn: () => Promise<T>,
   delaysMs: readonly number[] = MODEL_404_RETRY_DELAYS_MS,
+  budget?: RetryBudget,
 ): Promise<T> {
   let retries = 0;
   for (;;) {
@@ -77,7 +112,9 @@ export async function withTransient404Retry<T>(
     } catch (err) {
       if (!isTransientModel404(err) || retries >= delaysMs.length) throw err;
       logModel404Retry(context, retries, err);
-      await sleep(delaysMs[Math.min(retries, delaysMs.length - 1)] ?? 2000);
+      const delay = delaysMs[Math.min(retries, delaysMs.length - 1)] ?? 8000;
+      if (budget && !(await sleepWithinBudget(delay, budget))) throw err;
+      if (!budget) await sleep(delay);
       retries += 1;
     }
   }

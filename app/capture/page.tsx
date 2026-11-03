@@ -5,6 +5,7 @@ import { upload } from "@vercel/blob/client";
 
 import CropEditor from "./crop-editor";
 import { createNDJSONParser } from "@/lib/ndjson";
+import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 
 const MAX_FILES = 10;
 const MAX_DIM = 1600;
@@ -192,6 +193,7 @@ export default function CapturePage() {
 
   const tagTimers = useRef(new Map<string, number>());
   const [photoPrompt, setPhotoPrompt] = useState<PhotoPrompt | null>(null);
+  const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
 
   // Tag-timeout timers must not outlive the page.
   useEffect(() => {
@@ -236,12 +238,27 @@ export default function CapturePage() {
     );
   }
 
-  /** Segment one photo by its Blob pathname; streams cards progressively. */
-  async function scanPhoto(photo: Photo, label: string, parentOverride?: string): Promise<number> {
+  /**
+   * Segment one photo by its Blob pathname; streams cards progressively.
+   * On a Meta outage the whole action auto-retries once after 10s, then
+   * offers a manual Try again. The raw API error never reaches the screen.
+   */
+  async function scanPhoto(
+    photo: Photo,
+    label: string,
+    parentOverride?: string,
+    isRetry = false,
+  ): Promise<number> {
     setStatus(`Finding clothes in ${label}…`);
+    setRetryAction(null);
+    const hiccupTimer = window.setTimeout(
+      () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
+      8000,
+    );
     const rootPath = parentOverride ?? rootOf(photo.pathname);
     const rootPhoto = photos.find((p) => p.pathname === rootPath) ?? photo;
     let received = 0;
+    let streamFailed = false;
     try {
       const res = await fetch("/api/segment", {
         method: "POST",
@@ -253,18 +270,33 @@ export default function CapturePage() {
         ),
       });
       if (!res.ok || !res.body) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          code?: string;
+        } | null;
+        const failure = new Error(body?.error ?? `HTTP ${res.status}`);
+        (failure as { code?: string }).code = body?.code;
+        throw failure;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       const parser = createNDJSONParser((event: unknown) => {
         const typed = event as {
           event?: string;
+          status?: string;
           candidate?: Omit<Candidate, "tagging" | "tags">;
           id?: string;
           tags?: Candidate["tags"];
+          error?: string;
         };
+        if (typed.event === "status" && typed.status === "retrying") {
+          setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+          return;
+        }
+        if (typed.event === "error") {
+          streamFailed = true;
+          return;
+        }
         if (typed.event === "cutout" && typed.candidate) {
           const c = typed.candidate;
           received += 1;
@@ -284,13 +316,18 @@ export default function CapturePage() {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      window.clearTimeout(hiccupTimer);
       // Any card still tagging (timeout or truncated stream) becomes untagged.
       setCandidates((prev) => {
         prev.filter((c) => c.tagging).forEach((c) => clearTagTimer(c.id));
         return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
       });
       if (received === 0) {
-        setStatus(`No garments found in ${label}. Try a plainer background and better light.`);
+        setStatus(
+          streamFailed
+            ? `${label} failed: the scan ended before any clothes arrived.`
+            : `No garments found in ${label}. Try a plainer background and better light.`,
+        );
       } else {
         setStatus(`Found ${received} item${received === 1 ? "" : "s"} in ${label}.`);
       }
@@ -298,11 +335,26 @@ export default function CapturePage() {
       await refresh();
       return received;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Segmentation failed.";
+      window.clearTimeout(hiccupTimer);
       setCandidates((prev) => {
         prev.filter((c) => c.tagging).forEach((c) => clearTagTimer(c.id));
         return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
       });
+      if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
+        setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        return scanPhoto(photo, label, parentOverride, true);
+      }
+      if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
+        setStatus("Meta's AI is still having trouble.");
+        setRetryAction(() => () => {
+          setRetryAction(null);
+          void scanPhoto(photo, label, parentOverride);
+        });
+        await refresh();
+        return 0;
+      }
+      const message = err instanceof Error ? err.message : "Segmentation failed.";
       setStatus(received > 0 ? `Scan incomplete — showing what arrived. ${message}` : `${label} failed: ${message}`);
       await refresh();
       return received;
@@ -608,6 +660,19 @@ export default function CapturePage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
+      {retryAction && (
+        <button
+          type="button"
+          onClick={() => {
+            const rerun = retryAction;
+            setRetryAction(null);
+            rerun();
+          }}
+          className="min-h-14 rounded-2xl bg-black text-lg font-semibold text-white dark:bg-white dark:text-black"
+        >
+          Try again
+        </button>
+      )}
       {cropTarget && (
         <CropEditor
           imageUrl={cropTarget.displayUrl}

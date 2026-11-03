@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getMetaClient } from "@/lib/meta/client";
-import { withTransient404Retry } from "@/lib/meta/retry";
+import { createRetryBudget, withTransient404Retry } from "@/lib/meta/retry";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -18,12 +18,16 @@ export async function GET(request: Request) {
   }
   const started = performance.now();
   try {
-    const response = await withTransient404Retry("health", () =>
-      getMetaClient().responses.create({
-        model: MODEL,
-        reasoning: { effort: "low" },
-        input: "Reply with the single word: ok",
-      }),
+    const response = await withTransient404Retry(
+      "health",
+      () =>
+        getMetaClient().responses.create({
+          model: MODEL,
+          reasoning: { effort: "low" },
+          input: "Reply with the single word: ok",
+        }),
+      undefined,
+      createRetryBudget(started + 15_000),
     );
     const latencyMs = Math.round(performance.now() - started);
     const text = response.output_text ?? "";

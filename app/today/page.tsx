@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
+
 const CITY_KEY = "closet-ai-city";
 
 const MOODS = ["calm", "confident", "cozy", "bold", "lazy"] as const;
@@ -72,6 +74,7 @@ export default function TodayPage() {
   const [status, setStatus] = useState("Pick a mood and an occasion to get dressed.");
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -94,13 +97,18 @@ export default function TodayPage() {
     }
   }
 
-  async function fetchOutfits(exclude: string[], label: string) {
+  async function fetchOutfits(exclude: string[], label: string, isRetry = false) {
     if (!mood || !occasion) {
       setStatus("Pick a mood and an occasion first.");
       return;
     }
     setBusy(true);
     setStatus(label);
+    setRetryAction(null);
+    const hiccupTimer = window.setTimeout(
+      () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
+      8000,
+    );
     try {
       const res = await fetch("/api/outfits", {
         method: "POST",
@@ -123,9 +131,15 @@ export default function TodayPage() {
         dressCode?: DressCodeView | null;
         missing?: string[];
         error?: string;
+        code?: string;
       };
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if (!res.ok) {
+        const failure = new Error(body.error ?? `HTTP ${res.status}`);
+        (failure as { code?: string }).code = body.code;
+        throw failure;
+      }
       if ((body.missing ?? []).length > 0) {
+        window.clearTimeout(hiccupTimer);
         setMissing(body.missing ?? []);
         setOutfits([]);
         setStatus("Your closet can't make a full outfit yet.");
@@ -134,6 +148,7 @@ export default function TodayPage() {
       setMissing([]);
       const fresh = body.outfits ?? [];
       if (fresh.length === 0) {
+        window.clearTimeout(hiccupTimer);
         setStatus(
           exclude.length > 0
             ? "That's every combination for this mood — try a different one."
@@ -141,6 +156,7 @@ export default function TodayPage() {
         );
         return;
       }
+      window.clearTimeout(hiccupTimer);
       setOutfits(fresh);
       setItemCards(body.items ?? {});
       setWeather(body.weather ?? null);
@@ -150,6 +166,20 @@ export default function TodayPage() {
         `Outfit 1 of ${fresh.length} ready.${fresh.length > 1 ? " Swipe through them all." : ""}`,
       );
     } catch (err) {
+      window.clearTimeout(hiccupTimer);
+      if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
+        setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        return fetchOutfits(exclude, label, true);
+      }
+      if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
+        setStatus("Meta's AI is still having trouble.");
+        setRetryAction(() => () => {
+          setRetryAction(null);
+          void fetchOutfits(exclude, label);
+        });
+        return;
+      }
       const message = err instanceof Error ? err.message : "Outfit picking failed.";
       setStatus(`Couldn't get outfits: ${message}`);
     } finally {
@@ -306,6 +336,19 @@ export default function TodayPage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
+      {retryAction && (
+        <button
+          type="button"
+          onClick={() => {
+            const rerun = retryAction;
+            setRetryAction(null);
+            rerun();
+          }}
+          className="min-h-14 rounded-2xl bg-black text-lg font-semibold text-white dark:bg-white dark:text-black"
+        >
+          Try again
+        </button>
+      )}
 
       {missing.length > 0 && (
         <section aria-label="Closet gaps" className="flex flex-col gap-3">

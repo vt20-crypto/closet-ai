@@ -18,6 +18,12 @@ import {
   mergeFootwearPairs,
   type FilterBox,
 } from "@/lib/filters";
+import {
+  createRetryBudget,
+  isMetaApiError,
+  META_HICCUP_MESSAGE,
+  META_UNAVAILABLE_CODE,
+} from "@/lib/meta/retry";
 import { decodeRaster, fetchPhoto, segmentGarments } from "@/lib/meta/sam";
 import { tagGarment, type GarmentTags } from "@/lib/meta/spark";
 
@@ -69,12 +75,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Could not read the photo dimensions." }, { status: 400 });
     }
 
+    // One 40s retry budget shared by all nouns and tags in this scan:
+    // retries ride out Meta 404 bursts without stalling the user.
+    const retryBudget = createRetryBudget(tAll + 40_000);
     const tSam = performance.now();
-    const { detections: raw, allErrored } = await segmentGarments(bytes, mime, iw, ih);
+    const { detections: raw, allErrored, retried } = await segmentGarments(
+      bytes, mime, iw, ih, undefined, undefined, retryBudget,
+    );
     const samMs = Math.round(performance.now() - tSam);
     if (allErrored) {
       console.log(`segment photo=${photoPathname} sam_ms=${samMs} all_nouns_errored`);
-      return NextResponse.json({ error: "Couldn't scan, try again." }, { status: 503 });
+      return NextResponse.json(
+        { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
+        { status: 503 },
+      );
     }
 
     // Filter 1+2: confidence >= 0.90 AND mask area >= 2% of the image.
@@ -147,6 +161,9 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
         };
         try {
+          // SAM already recovered from a hiccup mid-scan: tell the UI so it
+          // can say so instead of leaving a bare spinner.
+          if (retried) send({ event: "status", status: "retrying" });
           const saved: {
             id: string;
             cutoutUrl: string;
@@ -178,8 +195,10 @@ export async function POST(request: Request) {
               try {
                 const flat = await flattenForTag(cutout.png);
                 const dataUrl = `data:image/jpeg;base64,${flat.toString("base64")}`;
-                let result = await tagGarment(dataUrl, { isPair: u.isPair });
-                if (result.errored) result = await tagGarment(dataUrl, { isPair: u.isPair });
+                let result = await tagGarment(dataUrl, { isPair: u.isPair, budget: retryBudget });
+                if (result.errored) {
+                  result = await tagGarment(dataUrl, { isPair: u.isPair, budget: retryBudget });
+                }
                 tags = result.errored ? null : result.tags;
                 errored = result.errored;
               } catch {
@@ -239,6 +258,12 @@ export async function POST(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Segmentation failed.";
     console.log(`segment photo=${photoPathname || "?"} ERROR ${message.slice(0, 160)}`);
+    if (isMetaApiError(err)) {
+      return NextResponse.json(
+        { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

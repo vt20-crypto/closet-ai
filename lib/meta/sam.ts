@@ -8,7 +8,13 @@ import {
 } from "@meta-sam/parser";
 
 import { getMetaClient } from "./client";
-import { isTransientModel404, logModel404Retry, model404RetryDelayMs } from "./retry";
+import {
+  isTransientModel404,
+  logModel404Retry,
+  model404RetryDelayMs,
+  sleepWithinBudget,
+  type RetryBudget,
+} from "./retry";
 
 /**
  * Specific garment nouns, one per SAM request. Generic phrases ("clothing")
@@ -143,6 +149,8 @@ export interface NounResult {
   code?: string;
   masks: number;
   detections: GarmentDetection[];
+  /** True when this noun needed at least one retry sleep. */
+  retried: boolean;
 }
 
 function errorCode(err: unknown): string {
@@ -155,13 +163,18 @@ function errorCode(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
 }
 
-/** Segment one image (already fetched) for one noun. Never throws. */
+/**
+ * Segment one image (already fetched) for one noun. Never throws.
+ * Transient 404s retry up to 4 times (1s, 2s, 4s, 8s) against the shared
+ * scan budget; a spent budget ends retries immediately.
+ */
 export async function segmentBytes(
   bytes: Buffer,
   mime: string,
   noun: string,
   imageWidth: number,
   imageHeight: number,
+  retryBudget?: RetryBudget,
 ): Promise<NounResult> {
   const api = getMetaClient();
   const failure = (err: unknown): NounResult => ({
@@ -170,9 +183,11 @@ export async function segmentBytes(
     code: errorCode(err),
     masks: 0,
     detections: [],
+    retried,
   });
   let retries404 = 0;
   let retriesBackoff = 0;
+  let retried = false;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       const stream = await api.responses.create({
@@ -198,7 +213,7 @@ export async function segmentBytes(
         normalizedEvents(stream as unknown as AsyncIterable<unknown>) as never,
       ).finalResult;
       if (result.outcome.status !== "completed") {
-        return { noun, status: "error", code: `outcome_${result.outcome.status}`, masks: 0, detections: [] };
+        return { noun, status: "error", code: `outcome_${result.outcome.status}`, masks: 0, detections: [], retried };
       }
       const boxes = recordsOfKind(result.records, "box");
       const masks = recordsOfKind(result.records, "mask");
@@ -220,29 +235,35 @@ export async function segmentBytes(
         const confidence = m.confidence ?? paired?.confidence ?? 0;
         out.push({ noun, box, confidence, mask: m.mask });
       }
-      return { noun, status: "ok", masks: masks.length, detections: out };
+      return { noun, status: "ok", masks: masks.length, detections: out, retried };
     } catch (err) {
       const status = (err as { status?: number })?.status;
       // The model declines some images; a 400 is final, not worth retrying.
       if (status === 400) return failure(err);
       // Intermittent 404 "model not found" from the hosting edge: transient.
       if (isTransientModel404(err)) {
-        if (retries404 >= 3) return failure(err);
+        if (retries404 >= 4) return failure(err);
         logModel404Retry(`sam noun=${noun}`, retries404, err);
-        await sleep(model404RetryDelayMs(retries404));
+        const delay = model404RetryDelayMs(retries404);
+        if (retryBudget && !(await sleepWithinBudget(delay, retryBudget))) {
+          return failure(err);
+        }
+        if (!retryBudget) await sleep(delay);
         retries404 += 1;
+        retried = true;
         continue;
       }
       const backoff = retryAfterMs(err, retriesBackoff);
       if (backoff !== null && retriesBackoff < 3) {
         await sleep(backoff);
         retriesBackoff += 1;
+        retried = true;
         continue;
       }
       return failure(err);
     }
   }
-  return { noun, status: "error", code: "retries_exhausted", masks: 0, detections: [] };
+  return { noun, status: "error", code: "retries_exhausted", masks: 0, detections: [], retried };
 }
 
 /** Fetch a photo URL to bytes. Throws on network failure. */
@@ -263,12 +284,15 @@ export interface GarmentSegmentation {
   results: NounResult[];
   /** True when every noun call errored: the scan tells the user to retry. */
   allErrored: boolean;
+  /** True when any noun needed a retry sleep (hiccup signal for the UI). */
+  retried: boolean;
 }
 
 /**
- * Run garment nouns with capped concurrency (5 at a time: 14 at once
- * trips rate limits). Per-noun status is logged by the caller-visible
- * results; the whole call never throws for API errors.
+ * Run garment nouns in parallel (14 at once). One shared retry budget per
+ * scan caps total retry sleeping — it is never multiplied by 14. Per-noun
+ * status is logged by the caller-visible results; the whole call never
+ * throws for API errors.
  */
 export async function segmentGarments(
   bytes: Buffer,
@@ -277,6 +301,7 @@ export async function segmentGarments(
   imageHeight: number,
   nouns: readonly string[] = GARMENT_NOUNS,
   concurrency = 14,
+  retryBudget?: RetryBudget,
 ): Promise<GarmentSegmentation> {
   const results: NounResult[] = new Array(nouns.length);
   let next = 0;
@@ -289,7 +314,7 @@ export async function segmentGarments(
         if (index >= nouns.length) return;
         const noun = nouns[index] as string;
         const t0 = performance.now();
-        const result = await segmentBytes(bytes, mime, noun, imageWidth, imageHeight);
+        const result = await segmentBytes(bytes, mime, noun, imageWidth, imageHeight, retryBudget);
         results[index] = result;
         const ms = Math.round(performance.now() - t0);
         const conf = result.detections.map((d) => d.confidence.toFixed(2)).join(",");
@@ -306,6 +331,7 @@ export async function segmentGarments(
     detections: results.flatMap((r) => r.detections),
     results,
     allErrored: results.length > 0 && results.every((r) => r.status === "error"),
+    retried: results.some((r) => r.retried),
   };
 }
 

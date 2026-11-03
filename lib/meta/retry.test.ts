@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  createRetryBudget,
   isTransientModel404,
   model404RetryDelayMs,
+  sleepWithinBudget,
   withTransient404Retry,
 } from "./retry.ts";
 
@@ -34,10 +36,15 @@ test("429 and 5xx are untouched by this rule", () => {
   assert.equal(isTransientModel404(apiError(400, "400 model bad request")), false);
 });
 
-test("retry delays are 500ms, 1s, 2s", () => {
+test("retry delays are 1s, 2s, 4s, 8s", () => {
   assert.deepEqual(
-    [model404RetryDelayMs(0), model404RetryDelayMs(1), model404RetryDelayMs(2)],
-    [500, 1000, 2000],
+    [
+      model404RetryDelayMs(0),
+      model404RetryDelayMs(1),
+      model404RetryDelayMs(2),
+      model404RetryDelayMs(3),
+    ],
+    [1000, 2000, 4000, 8000],
   );
 });
 
@@ -68,7 +75,7 @@ test("withTransient404Retry rethrows other errors immediately", async () => {
   assert.equal(calls, 1);
 });
 
-test("withTransient404Retry gives up after 3 retries", async () => {
+test("withTransient404Retry gives up after 4 retries", async () => {
   let calls = 0;
   await assert.rejects(
     withTransient404Retry(
@@ -77,9 +84,32 @@ test("withTransient404Retry gives up after 3 retries", async () => {
         calls += 1;
         throw apiError(404, "404 The requested model was not found");
       },
-      [1, 1, 1],
+      [1, 1, 1, 1],
     ),
     /not found/,
   );
-  assert.equal(calls, 4);
+  assert.equal(calls, 5);
+});
+
+test("a spent budget stops retries immediately", async () => {
+  let calls = 0;
+  const budget = createRetryBudget(Date.now() - 1);
+  await assert.rejects(
+    withTransient404Retry(
+      "test",
+      async () => {
+        calls += 1;
+        throw apiError(404, "404 The requested model was not found");
+      },
+      [1, 1, 1, 1],
+      budget,
+    ),
+    /not found/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("sleepWithinBudget respects the deadline", async () => {
+  assert.equal(await sleepWithinBudget(50, createRetryBudget(Date.now() - 1)), false);
+  assert.equal(await sleepWithinBudget(5, createRetryBudget(Date.now() + 5000)), true);
 });

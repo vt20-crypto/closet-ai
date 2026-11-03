@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
 import { listItems } from "@/lib/closet";
+import {
+  createRetryBudget,
+  isMetaApiError,
+  META_HICCUP_MESSAGE,
+  META_UNAVAILABLE_CODE,
+} from "@/lib/meta/retry";
 import { fetchDressCode, pickOutfits } from "@/lib/meta/spark";
 import {
   countCoverage,
@@ -68,6 +74,8 @@ export async function POST(request: Request) {
     const lon = cleanNumber(body.lon);
     const city = cleanText(body.city);
     const venue = destination ?? occasionText;
+    // One 25s retry budget shared by the dress search and the pick.
+    const retryBudget = createRetryBudget(tAll + 25_000);
 
     let weatherMs = 0;
     let dressMs = 0;
@@ -90,15 +98,18 @@ export async function POST(request: Request) {
     const dressPromise = (async () => {
       const t = performance.now();
       try {
-        return venue ? await fetchDressCode(venue) : null;
+        return venue ? await fetchDressCode(venue, retryBudget) : null;
       } finally {
         dressMs = Math.round(performance.now() - t);
       }
     })();
     const [weather, dressCode] = await Promise.all([weatherPromise, dressPromise]);
-    const dressSearched = venue !== null;
+    // A failed dress call continues without it: treated exactly like no venue
+    // (hidden UI, "skipped" in logs). Only a ran search with a note counts.
+    const dressFailed = venue !== null && !dressCode;
+    const dressSearched = !!dressCode?.note;
     const dressCitations = dressCode?.citations ?? 0;
-    const dressStatus = !dressSearched ? "skipped" : dressCode ? "searched" : "none";
+    const dressStatus = !venue || dressFailed ? "skipped" : dressSearched ? "searched" : "none";
 
     const weatherLine = weather
       ? `High ${weather.highC}°C, low ${weather.lowC}°C, ${weather.precipChancePct}% precipitation chance, wind ${weather.windKph} kph.`
@@ -121,6 +132,7 @@ export async function POST(request: Request) {
       dressCodeNote: dressCode?.note ?? null,
       excludeKeys: [...excludeKeys],
       retryProblems: null as string | null,
+      budget: retryBudget,
     };
 
     const tSpark = performance.now();
@@ -173,6 +185,12 @@ export async function POST(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Outfit picking failed.";
     console.log(`outfits ERROR ${message.slice(0, 160)}`);
+    if (isMetaApiError(err)) {
+      return NextResponse.json(
+        { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
