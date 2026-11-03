@@ -50,23 +50,24 @@ interface TapeProps {
 }
 
 /**
- * Butter-yellow tape label with dark Caveat ink. Slightly overlaps the tile
- * edge via the caller's negative margin. Long labels (e.g. "You said …")
- * wrap within the screen width, clamp to 3 lines, and get a more/less toggle
- * instead of ever causing horizontal scroll.
+ * Butter-yellow tape label with dark Caveat ink. Labels never exceed 2
+ * lines (ellipsis after that); long text gets a smaller font and a
+ * more/less toggle instead of ever causing horizontal scroll. Tapes always
+ * sit fully inside their tile (callers: no negative offsets past tile edges).
  */
 export function Tape({ label, seedId, className }: TapeProps) {
   const tilt = tiltForId(`tape:${seedId}`, 3);
   const long = label.length > 60;
   const [open, setOpen] = useState(false);
+  const size = label.length > 16 ? "text-base" : label.length > 10 ? "text-lg" : "text-xl";
   return (
     <span
-      className={`tape font-hand inline-block max-w-full rounded-xs px-3 py-1 leading-tight font-semibold break-words ${
-        long ? "text-lg" : "text-xl"
-      } ${className ?? ""}`}
+      className={`tape font-hand inline-block max-w-full rounded-xs px-3 py-1 leading-tight font-semibold break-words ${size} ${
+        className ?? ""
+      }`}
       style={{ rotate: `${tilt}deg` } as CSSProperties}
     >
-      <span className={long && !open ? "line-clamp-3" : undefined}>{label}</span>
+      <span className={long && open ? undefined : "line-clamp-2"}>{label}</span>
       {long && (
         <button
           type="button"

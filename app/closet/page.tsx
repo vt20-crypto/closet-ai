@@ -112,7 +112,7 @@ export default function ClosetPage() {
                     lazy
                   />
                 </div>
-                <p className="-mt-1 mb-2 self-center">
+                <p className="mt-1 mb-1 self-center">
                   <Tape label={tapeLabel(item.tags)} seedId={item.id} />
                 </p>
                 <details>

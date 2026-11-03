@@ -3,6 +3,7 @@ import "server-only";
 import type { RawOutfit } from "../outfits";
 
 import { getMetaClient } from "./client";
+import { hashKey, readCache, writeCache } from "../cache";
 import {
   isTransientModel404,
   sleepForTransient404,
@@ -23,7 +24,8 @@ const BASE_PROMPT =
   "items, a non-garment object, or unrecognizable — set is_single_garment=false and say why in " +
   "rejection_reason (else null). Otherwise describe the garment. Formality and warmth are 1-5. " +
   "The distinguishing_note must name one visual detail that tells this item apart from similar ones. " +
-  "The nickname is at most 2 words, playful but accurate (e.g. 'Walkable', \"Daily Levi's\").";
+  "The nickname is at most 2 words and 16 characters total, playful but accurate " +
+  "(e.g. 'Walkable', \"Daily Levi's\").";
 
 const PAIR_PROMPT =
   " This cutout may show a matched PAIR of shoes/boots side by side; if so, describe it as one " +
@@ -71,10 +73,22 @@ export interface DressCodeNote {
  * from model text; no citation means no link. 10s timeout; any failure
  * returns null so the caller skips it.
  */
+const DRESS_TTL_MS = 24 * 60 * 60 * 1000;
+
+function normalizeVenue(venue: string): string {
+  return venue.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
 export async function fetchDressCode(
   venue: string,
   budget?: RetryBudget,
 ): Promise<DressCodeNote | null> {
+  const normalized = normalizeVenue(venue);
+  if (!normalized) return null;
+  const cachePath = `dress/${hashKey(normalized)}`;
+  const cached = await readCache<DressCodeNote>(cachePath, DRESS_TTL_MS);
+  console.log(`dress cache=${cached.hit ? "hit" : "miss"}`);
+  if (cached.hit && cached.data) return cached.data;
   const api = getMetaClient();
   // Own policy, separate from the pick: a 404 (outage signature) skips dress
   // immediately so it can never starve the pick; 429/5xx get one retry.
@@ -93,7 +107,9 @@ export async function fetchDressCode(
       );
       const note = (res.output_text ?? "").trim();
       const urls = citationUrls(res.output);
-      return { note: note || null, url: urls[0] ?? null, citations: urls.length };
+      const out = { note: note || null, url: urls[0] ?? null, citations: urls.length };
+      if (out.note) await writeCache(cachePath, out);
+      return out;
     } catch (err) {
       if (isTransientModel404(err)) return null;
       const status = (err as { status?: number })?.status;
@@ -185,8 +201,9 @@ const OUTFIT_SCHEMA = {
 } as const;
 
 /**
- * Pick 1-3 outfits from the compact closet list. No tools on this call.
- * Returns the raw proposals; the route validates every id server-side.
+ * Pick up to 9 ranked outfits from the compact closet list. No tools on
+ * this call. Returns the raw proposals; the route validates every id
+ * server-side.
  */
 export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]> {
   const api = getMetaClient();
@@ -197,7 +214,7 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     )
     .join("\n");
   const parts = [
-    `Pick at most 3 outfits from this closet (never pad with filler; fewer good outfits beat three bad ones). Use ONLY these item ids, exactly as written:`,
+    `Pick up to 9 outfits from this closet, best first (never pad with filler; fewer good outfits beat nine bad ones). Use ONLY these item ids, exactly as written:`,
     lines,
     input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
     input.mood ? `Mood: ${input.mood}.` : `No mood given; pick something versatile.`,
@@ -234,7 +251,7 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     input.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
-  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
+  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 9) : [];
 }
 
 export interface VoiceSlots {

@@ -3,8 +3,8 @@ import Link from "next/link";
 import { listItems } from "@/lib/closet";
 import { tapeLabel } from "@/lib/labels";
 
-import HealthStatus from "./health-status";
 import HomeWeather from "./home-weather";
+import InstallTip from "./install-tip";
 import MeButton from "./me-button";
 import { Sticker, Tape } from "./sticker";
 import { AddIcon, ClosetIcon } from "./tab-bar";
@@ -91,7 +91,7 @@ export default async function Home() {
                   <span className="flex h-32 items-center justify-center">
                     <Sticker src={item.cutoutUrl} alt={item.alt} seedId={item.id} rich />
                   </span>
-                  <span className="-mt-1">
+                  <span className="mt-1 max-w-full">
                     <Tape label={item.tape} seedId={item.id} />
                   </span>
                 </Link>
@@ -107,7 +107,7 @@ export default async function Home() {
           </Link>
         )}
       </section>
-      <HealthStatus />
+      <InstallTip />
     </main>
   );
 }

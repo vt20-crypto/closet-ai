@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 
+import HealthStatus from "./health-status";
 import ThemeSwitch from "./theme-switch";
 
 /**
@@ -56,6 +57,7 @@ export default function MeButton() {
           <p className="text-lg">
             {count === null ? "Counting closet…" : `${count} item${count === 1 ? "" : "s"} in your closet.`}
           </p>
+          <HealthStatus />
           <button
             type="button"
             disabled

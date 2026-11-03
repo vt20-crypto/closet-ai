@@ -189,3 +189,46 @@ export function slotRank(category: string): number {
   const rank = (SLOT_ORDER as string[]).indexOf(category);
   return rank === -1 ? SLOT_ORDER.length : rank;
 }
+
+const COUNT_CAP_PER_SLOT = 12;
+
+/**
+ * Count every valid complete outfit the closet can make (same validator as
+ * the route). Enumerates top×bottom and dress combos with shoes when the
+ * closet has any, capped per slot to bound the search. Powers "Seen N of M".
+ */
+export function countCompleteOutfits(items: OutfitItemLike[]): number {
+  const byCat = new Map<OutfitCategory, OutfitItemLike[]>();
+  for (const item of items) {
+    const cat = normalizeOutfitType(item.tags.type);
+    const list = byCat.get(cat) ?? [];
+    if (list.length < COUNT_CAP_PER_SLOT) list.push(item);
+    byCat.set(cat, list);
+  }
+  const tops = byCat.get("top") ?? [];
+  const bottoms = byCat.get("bottom") ?? [];
+  const dresses = byCat.get("dress") ?? [];
+  const shoesList = byCat.get("shoes") ?? [];
+  const outers = byCat.get("outer") ?? [];
+  const shoesOptions: string[][] = shoesList.length > 0 ? shoesList.map((s) => [s.id]) : [[]];
+  const outerOptions: string[][] = [[], ...outers.map((o) => [o.id])];
+
+  const raw: RawOutfit[] = [];
+  for (const t of tops) {
+    for (const b of bottoms) {
+      for (const s of shoesOptions) {
+        for (const o of outerOptions) {
+          raw.push({ item_ids: [t.id, b.id, ...s, ...o], reason: "", weather_note: "" });
+        }
+      }
+    }
+  }
+  for (const d of dresses) {
+    for (const s of shoesOptions) {
+      for (const o of outerOptions) {
+        raw.push({ item_ids: [d.id, ...s, ...o], reason: "", weather_note: "" });
+      }
+    }
+  }
+  return validateOutfits({ items, raw }).valid.length;
+}

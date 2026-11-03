@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  countCompleteOutfits,
   countCoverage,
   coverageMissing,
   normalizeOutfitType,
@@ -148,4 +149,14 @@ test("flat-lay slots order outer before top, shoes last", () => {
 test("flat-lay slots put unknown types last", () => {
   assert.equal(slotForType("handbag"), "other");
   assert.ok(slotRank("other") > slotRank("shoes"));
+});
+
+test("countCompleteOutfits counts every valid combo", () => {
+  const items = [item("t1", "shirt"), item("t2", "sweater"), item("b1", "jeans"), item("s1", "sneakers")];
+  // 2 tops × 1 bottom × 1 shoes = 2 complete outfits.
+  assert.equal(countCompleteOutfits(items), 2);
+});
+
+test("countCompleteOutfits is 0 without a complete outfit", () => {
+  assert.equal(countCompleteOutfits([item("t1", "shirt")]), 0);
 });

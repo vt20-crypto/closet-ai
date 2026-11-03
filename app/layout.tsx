@@ -8,6 +8,12 @@ import TopNav from "./top-nav";
 export const metadata: Metadata = {
   title: "Closet AI",
   description: "Outfits from the clothes you already own.",
+  icons: { apple: "/icons/icon-180.png" },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Closet AI",
+  },
 };
 
 export const viewport: Viewport = {

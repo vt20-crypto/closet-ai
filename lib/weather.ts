@@ -32,9 +32,20 @@ export async function geocodeCity(city: string): Promise<{ lat: number; lon: num
   }
 }
 
+const FORECAST_TTL_MS = 15 * 60 * 1000;
+/** In-memory forecast cache keyed by rounded lat/lon (per server instance). */
+const forecastCache = new Map<string, { at: number; data: WeatherSummary }>();
+
 export async function getWeather(lat: number, lon: number): Promise<WeatherSummary | null> {
   try {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+    const cached = forecastCache.get(key);
+    if (cached && Date.now() - cached.at < FORECAST_TTL_MS) {
+      console.log("weather cache=hit");
+      return cached.data;
+    }
+    console.log("weather cache=miss");
     const res = await fetch(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
         `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max` +
@@ -53,12 +64,14 @@ export async function getWeather(lat: number, lon: number): Promise<WeatherSumma
     const highC = body.daily?.temperature_2m_max?.[0];
     const lowC = body.daily?.temperature_2m_min?.[0];
     if (typeof highC !== "number" || typeof lowC !== "number") return null;
-    return {
+    const summary: WeatherSummary = {
       highC: Math.round(highC * 10) / 10,
       lowC: Math.round(lowC * 10) / 10,
       precipChancePct: Math.round(body.daily?.precipitation_probability_max?.[0] ?? 0),
       windKph: Math.round((body.daily?.wind_speed_10m_max?.[0] ?? 0) * 10) / 10,
     };
+    forecastCache.set(`${lat.toFixed(2)},${lon.toFixed(2)}`, { at: Date.now(), data: summary });
+    return summary;
   } catch {
     return null;
   }

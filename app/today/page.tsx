@@ -97,6 +97,19 @@ export default function TodayPage() {
   const [heard, setHeard] = useState<string | null>(null);
   const [source, setSource] = useState<"ai" | "rules">("ai");
   const [exhausted, setExhausted] = useState(false);
+  const [voiceRequested, setVoiceRequested] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(3);
+  const [totalM, setTotalM] = useState(0);
+
+  const hasLocalMore = visibleCount < outfits.length;
+
+  // Get outfits unlocks with any single input or a completed voice request.
+  const canRun =
+    Boolean(mood) ||
+    Boolean(occasion) ||
+    occasionText.trim() !== "" ||
+    destination.trim() !== "" ||
+    voiceRequested;
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -162,6 +175,7 @@ export default function TodayPage() {
       });
       const body = (await res.json()) as {
         source?: "ai" | "rules";
+        total?: number;
         outfits?: OutfitView[];
         items?: Record<string, ItemCard>;
         weather?: WeatherView | null;
@@ -184,6 +198,7 @@ export default function TodayPage() {
       }
       setMissing([]);
       const fresh = body.outfits ?? [];
+      setTotalM(body.total ?? 0);
       if (fresh.length === 0) {
         window.clearTimeout(hiccupTimer);
         // Source stays untouched on empty responses; exhaustion gets a card.
@@ -198,6 +213,7 @@ export default function TodayPage() {
         return null;
       }
       setSource(body.source === "rules" ? "rules" : "ai");
+      setVisibleCount(3);
       window.clearTimeout(hiccupTimer);
       const items = body.items ?? {};
       const nextWeather = body.weather ?? null;
@@ -206,7 +222,7 @@ export default function TodayPage() {
       setItemCards(items);
       setWeather(nextWeather);
       setDressCode(nextDress);
-      setShownKeys((prev) => [...prev, ...fresh.map((o) => o.key)]);
+      setShownKeys((prev) => [...prev, ...fresh.map((o) => o.key).filter((k) => !prev.includes(k))]);
       setStatus(
         `Outfit 1 of ${fresh.length} ready.${fresh.length > 1 ? " Swipe through them all." : ""}`,
       );
@@ -310,6 +326,7 @@ export default function TodayPage() {
     setDestination(destinationV);
     if (slots.city) handleCityChange(slots.city);
     setHeard(transcript);
+    setVoiceRequested(true);
     const run = await fetchOutfits([], "Getting today's outfits…", false, {
       mood: moodV,
       occasion: occasionV,
@@ -428,10 +445,13 @@ export default function TodayPage() {
         </p>
       )}
 
+      {!canRun && !busy && (
+        <p className="text-lg text-(--text-muted)">Pick a mood or occasion, or tap to talk.</p>
+      )}
       <div className="flex gap-3">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !canRun}
           onClick={() =>
             void fetchOutfits([], "Getting today's outfits…").then((run) => {
               if (run && run.outfits.length > 0) {
@@ -447,11 +467,33 @@ export default function TodayPage() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void fetchOutfits(shownKeys, "Shuffling to new combinations…")}
-            aria-label="Shuffle to new outfit combinations"
+            onClick={() => {
+              if (hasLocalMore) {
+                // Page client-side: no AI call.
+                const next = outfits.slice(visibleCount, visibleCount + 3);
+                setVisibleCount((c) => c + 3);
+                setShownKeys((prev) => [
+                  ...prev,
+                  ...next.map((o) => o.key).filter((k) => !prev.includes(k)),
+                ]);
+                setStatus(
+                  `Showing outfits ${visibleCount + 1} to ${Math.min(visibleCount + 3, outfits.length)} of ${outfits.length}.`,
+                );
+                return;
+              }
+              // Everything countable already seen: skip the wasted call.
+              if (totalM > 0 && new Set(shownKeys).size >= totalM) {
+                setOutfits([]);
+                setExhausted(true);
+                setStatus("That's every combination — see below.");
+                return;
+              }
+              void fetchOutfits(shownKeys, "Finding more ideas…");
+            }}
+            aria-label={hasLocalMore ? "Shuffle to new outfit combinations" : "Get more outfit ideas"}
             className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
           >
-            Shuffle
+            {hasLocalMore ? "Shuffle" : "More ideas"}
           </button>
         )}
       </div>
@@ -512,7 +554,7 @@ export default function TodayPage() {
           aria-label="No more combinations"
           className="flex flex-col gap-3 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
         >
-          <h2 className="font-display text-2xl">You&apos;ve seen every combination</h2>
+          <h2 className="font-display text-2xl">You&apos;ve seen them all</h2>
           <p className="text-lg">Add more clothes or change the mood for fresh picks.</p>
           <Link
             href="/capture"
@@ -521,6 +563,12 @@ export default function TodayPage() {
             Add clothes
           </Link>
         </section>
+      )}
+
+      {totalM > 0 && outfits.length > 0 && (
+        <p className="text-lg text-(--text-muted)">
+          Seen {new Set(shownKeys).size} of {totalM} outfits.
+        </p>
       )}
 
       {outfits.length > 0 && (
@@ -542,7 +590,7 @@ export default function TodayPage() {
             Read again
           </button>
           {weather && <p className="text-lg">{weatherLine(weather)}</p>}
-          {outfits.map((outfit, index) => {
+          {outfits.slice(0, visibleCount).map((outfit, index) => {
             const cards = outfit.item_ids
               .map((id) => ({ id, card: itemCards[id] }))
               .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
@@ -581,7 +629,7 @@ export default function TodayPage() {
                           rich
                         />
                       </span>
-                      <span className="-mt-2">
+                      <span className="mt-1">
                         <Tape label={tapeLabel(card)} seedId={id} />
                       </span>
                     </li>
