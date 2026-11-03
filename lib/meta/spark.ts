@@ -220,6 +220,69 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 3) : [];
 }
 
+export interface VoiceSlots {
+  mood: string | null;
+  occasion: string | null;
+  occasion_text: string | null;
+  destination: string | null;
+  city: string | null;
+}
+
+const VOICE_SCHEMA = {
+  type: "object",
+  properties: {
+    mood: { type: ["string", "null"] },
+    occasion: { type: ["string", "null"] },
+    occasion_text: { type: ["string", "null"] },
+    destination: { type: ["string", "null"] },
+    city: { type: ["string", "null"] },
+  },
+  required: ["mood", "occasion", "occasion_text", "destination", "city"],
+  additionalProperties: false,
+} as const;
+
+/**
+ * Map a voice transcript onto the /today form. Minimal effort, strict JSON;
+ * every field is nullable and the caller decides what fills the form.
+ * Never throws Meta errors raw — transient 404s retry, the rest propagate
+ * for the route's meta_unavailable mapping.
+ */
+export async function parseVoiceSlots(
+  transcript: string,
+  opts?: { budget?: RetryBudget },
+): Promise<VoiceSlots> {
+  const api = getMetaClient();
+  const prompt =
+    `The user spoke to plan an outfit. Extract each slot or null when absent. ` +
+    `mood is one word for how they want to feel; occasion is one word for the event type ` +
+    `(work, class, date, gym, party, errands); occasion_text is any extra detail; ` +
+    `destination is a named venue or place; city is where they are or are going. ` +
+    `Transcript: ${JSON.stringify(transcript.slice(0, 500))}`;
+  const started = Date.now();
+  const res = await withTransient404Retry(
+    "spark voice",
+    () =>
+      api.responses.create({
+        model: MODEL,
+        reasoning: { effort: "minimal" },
+        input: prompt,
+        text: { format: { type: "json_schema", name: "voice_slots", strict: true, schema: VOICE_SCHEMA } },
+      }),
+    undefined,
+    opts?.budget,
+  );
+  const parsed = JSON.parse(res.output_text ?? "") as Partial<VoiceSlots>;
+  console.log(`spark voice_ms=${Date.now() - started}`);
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return {
+    mood: str(parsed.mood),
+    occasion: str(parsed.occasion),
+    occasion_text: str(parsed.occasion_text),
+    destination: str(parsed.destination),
+    city: str(parsed.city),
+  };
+}
+
 export interface TagResult {
   tags: GarmentTags;
   /**

@@ -190,9 +190,23 @@ body::before {
   animation: stamp-press 220ms ease-out both;
 }
 
+@keyframes mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 18px transparent;
+  }
+}
+
+.animate-mic-pulse {
+  animation: mic-pulse 1.4s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-sticker-pop,
-  .animate-stamp {
+  .animate-stamp,
+  .animate-mic-pulse {
     animation: none;
   }
 }
