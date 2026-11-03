@@ -225,7 +225,7 @@ export default function TodayPage() {
     }`;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
       <h1 className="text-3xl font-bold">Today</h1>
 
       <section aria-label="Mood" className="flex flex-col gap-3">
@@ -396,12 +396,12 @@ export default function TodayPage() {
               <h2 className="text-2xl font-bold">
                 Outfit {index + 1} of {outfits.length}
               </h2>
-              <ul className="flex gap-2 overflow-x-auto" aria-label="Outfit garments">
+              <ul className="flex gap-2 overflow-x-auto md:flex-wrap md:overflow-visible" aria-label="Outfit garments">
                 {outfit.item_ids.map((id) => {
                   const card = itemCards[id];
                   if (!card) return null;
                   return (
-                    <li key={id} className="w-28 shrink-0">
+                    <li key={id} className="w-28 shrink-0 md:w-36">
                       <img
                         src={card.cutoutUrl}
                         alt={`${card.type} in ${card.primary_color}`}

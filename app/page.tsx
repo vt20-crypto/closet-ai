@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
       <h1 className="text-4xl font-bold">Closet AI</h1>
       <p className="text-lg">Outfits from the clothes you already own.</p>
       <Link

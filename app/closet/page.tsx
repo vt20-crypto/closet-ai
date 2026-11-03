@@ -81,7 +81,7 @@ export default function ClosetPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
       <h1 className="text-3xl font-bold">Closet</h1>
       <p role="status" aria-live="polite" className="text-lg">
         {status}
@@ -91,7 +91,7 @@ export default function ClosetPage() {
           <h2 className="text-2xl font-bold capitalize">
             {type} ({group.length})
           </h2>
-          <ul className="grid grid-cols-2 gap-4">
+          <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {group.map((item) => (
               <li
                 key={item.id}

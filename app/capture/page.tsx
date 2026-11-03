@@ -636,7 +636,7 @@ export default function CapturePage() {
   const locked = busy || acting || cropTarget !== null;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
       <h1 className="text-3xl font-bold">Capture</h1>
       <p>Photograph one garment at a time against a plain background.</p>
       <input
@@ -808,7 +808,7 @@ export default function CapturePage() {
           )}
         </div>
         {unscanned.length > 0 && (
-          <ul className="grid grid-cols-2 gap-4">
+          <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {unscanned.map((photo, index) => (
               <li
                 key={photo.pathname}
@@ -857,7 +857,7 @@ export default function CapturePage() {
       {scanned.length > 0 && (
         <section aria-label="Scanned photos" className="flex flex-col gap-4">
           <h2 className="text-2xl font-bold">Scanned ({scanned.length})</h2>
-          <ul className="grid grid-cols-2 gap-4">
+          <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {scanned.map((photo, index) => {
               const kept = meta[photo.pathname]?.keptIds.length ?? 0;
               return (
