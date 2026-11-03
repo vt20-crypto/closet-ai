@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import { caveat, dmSans, playfair } from "./fonts";
 import TabBar from "./tab-bar";
 import TopNav from "./top-nav";
 
@@ -19,7 +20,11 @@ export default function RootLayout({
   return (
     // The head script sets data-theme pre-paint, so hydration must not warn
     // about the attribute it adds.
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${playfair.variable} ${dmSans.variable} ${caveat.variable}`}
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>

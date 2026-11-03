@@ -4,37 +4,59 @@
    utilities below carry theming, so no theme-prefixed color classes remain). */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* next/font variables (set on <html> in layout) mapped to Tailwind font
+   utilities: font-display (Playfair), font-sans (DM Sans), font-hand. */
+@theme inline {
+  --font-display: var(--font-playfair);
+  --font-sans: var(--font-dmsans);
+  --font-hand: var(--font-caveat);
+}
+
 :root,
 html[data-theme="light"] {
-  --background: #ffffff;
+  --background: #fbf6ec;
   --surface: #ffffff;
-  --surface-2: #f5f5f5;
-  --text: #000000;
-  --text-muted: #525252;
-  --border: #737373;
-  --primary: #000000;
+  --surface-2: #f3ebdd;
+  --text: #231a17;
+  --text-muted: #5e524b;
+  --border: #8a7b70;
+  --border-soft: #e6dccb;
+  --primary: #c93a22;
   --primary-text: #ffffff;
-  --danger: #b91c1c;
-  --disabled-bg: #e5e5e5;
-  --disabled-text: #525252;
-  --focus-ring: #2563eb;
+  --pop: #ffd84d;
+  --pop-ink: #231a17;
+  --danger: #b3261e;
+  --disabled-bg: #e6dccb;
+  --disabled-text: #5e524b;
+  --focus-ring: #7c2d12;
+  --shadow: rgba(62, 40, 28, 0.16);
+  --tabbar-bg: #231a17;
+  --tabbar-text: #f6eee3;
+  --tabbar-active: #ff7a5c;
   --checkerboard-light: #ffffff;
   --checkerboard-dark: #e2e2e2;
 }
 
 html[data-theme="dark"] {
-  --background: #000000;
-  --surface: #171717;
-  --surface-2: #262626;
-  --text: #ffffff;
-  --text-muted: #d4d4d4;
-  --border: #6b6b6b;
-  --primary: #ffffff;
-  --primary-text: #000000;
-  --danger: #fca5a5;
-  --disabled-bg: #262626;
-  --disabled-text: #d4d4d4;
-  --focus-ring: #93c5fd;
+  --background: #17120f;
+  --surface: #241d19;
+  --surface-2: #2e2520;
+  --text: #f6eee3;
+  --text-muted: #cdbfb2;
+  --border: #9c8b7e;
+  --border-soft: #3a2f29;
+  --primary: #ff7a5c;
+  --primary-text: #17120f;
+  --pop: #ffd84d;
+  --pop-ink: #231a17;
+  --danger: #ff9d94;
+  --disabled-bg: #2e2520;
+  --disabled-text: #cdbfb2;
+  --focus-ring: #ffd0bc;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --tabbar-bg: #231a17;
+  --tabbar-text: #f6eee3;
+  --tabbar-active: #ff7a5c;
   --checkerboard-light: #ffffff;
   --checkerboard-dark: #e2e2e2;
 }
@@ -42,21 +64,45 @@ html[data-theme="dark"] {
 /* Auto (default): follow the OS. Explicit light/dark above win. */
 @media (prefers-color-scheme: dark) {
   html[data-theme="auto"] {
-    --background: #000000;
-    --surface: #171717;
-    --surface-2: #262626;
-    --text: #ffffff;
-    --text-muted: #d4d4d4;
-    --border: #6b6b6b;
-    --primary: #ffffff;
-    --primary-text: #000000;
-    --danger: #fca5a5;
-  --disabled-bg: #262626;
-    --disabled-text: #d4d4d4;
-    --focus-ring: #93c5fd;
+    --background: #17120f;
+    --surface: #241d19;
+    --surface-2: #2e2520;
+    --text: #f6eee3;
+    --text-muted: #cdbfb2;
+    --border: #9c8b7e;
+    --border-soft: #3a2f29;
+    --primary: #ff7a5c;
+    --primary-text: #17120f;
+    --pop: #ffd84d;
+    --pop-ink: #231a17;
+    --danger: #ff9d94;
+    --disabled-bg: #2e2520;
+    --disabled-text: #cdbfb2;
+    --focus-ring: #ffd0bc;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --tabbar-bg: #231a17;
+    --tabbar-text: #f6eee3;
+    --tabbar-active: #ff7a5c;
     --checkerboard-light: #ffffff;
     --checkerboard-dark: #e2e2e2;
   }
+}
+
+body {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* Subtle paper grain over everything. Static, pointer-transparent, so it
+   needs no reduced-motion handling. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
 }
 
 /* One visible keyboard focus indicator for every control. */
@@ -65,8 +111,8 @@ html[data-theme="dark"] {
   outline-offset: 2px;
 }
 
-/* Light checkerboard behind transparent cutouts. Stays light in both
-   modes so dark garments remain visible in dark mode. */
+/* Light checkerboard behind transparent cutouts. Kept for legacy cards;
+   new sticker tiles sit on surface-2 with a die-cut outline instead. */
 .checkerboard {
   background-color: var(--checkerboard-light);
   background-image:
@@ -80,4 +126,68 @@ html[data-theme="dark"] {
     0 10px,
     10px -10px,
     -10px 0px;
+}
+
+/* Sticker die-cuts. The outline is constant white in both modes: a physical
+   sticker edge, not a theme surface (documented exception to tokens-only).
+   .sticker-rich (4× outline) is for Home and /today only; the /closet grid
+   and capture cards use cheaper .sticker-lite (2×). */
+.sticker-rich {
+  filter:
+    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
+    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
+    drop-shadow(0 12px 16px var(--shadow));
+}
+
+.sticker-lite {
+  filter:
+    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
+    drop-shadow(0 8px 12px var(--shadow));
+}
+
+/* Butter-yellow tape label: pop fill with dark ink, always. Never place
+   light text on pop. */
+.tape {
+  background-color: var(--pop);
+  color: var(--pop-ink);
+  box-shadow: 0 4px 8px var(--shadow);
+}
+
+@keyframes sticker-pop {
+  0% {
+    scale: 0.6;
+    opacity: 0;
+  }
+  60% {
+    scale: 1.06;
+    opacity: 1;
+  }
+  100% {
+    scale: 1;
+    opacity: 1;
+  }
+}
+
+@keyframes stamp-press {
+  0% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-sticker-pop {
+  animation: sticker-pop 280ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.animate-stamp {
+  animation: stamp-press 220ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-sticker-pop,
+  .animate-stamp {
+    animation: none;
+  }
 }

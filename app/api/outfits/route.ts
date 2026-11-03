@@ -150,13 +150,15 @@ export async function POST(request: Request) {
     const sparkMs = Math.round(performance.now() - tSpark);
 
     const usedIds = new Set(valid.flatMap((o) => o.item_ids));
-    const itemCards: Record<string, { cutoutUrl: string; type: string; primary_color: string }> = {};
+    const itemCards: Record<string, { cutoutUrl: string; type: string; primary_color: string; nickname: string; layer: string }> = {};
     for (const item of items) {
       if (usedIds.has(item.id)) {
         itemCards[item.id] = {
           cutoutUrl: item.cutoutUrl,
           type: item.tags.type,
           primary_color: item.tags.primary_color,
+          nickname: item.tags.nickname ?? "",
+          layer: item.tags.layer,
         };
       }
     }

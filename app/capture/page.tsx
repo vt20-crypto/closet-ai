@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
 import CropEditor from "./crop-editor";
+import { Sticker, Tape } from "../sticker";
+import { tapeLabel } from "@/lib/labels";
 import { createNDJSONParser } from "@/lib/ndjson";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 
@@ -38,6 +40,8 @@ interface Candidate {
     distinguishing_note: string;
     is_single_garment: boolean;
     rejection_reason: string | null;
+    /** Absent on items tagged before nicknames existed. */
+    nickname?: string;
   } | null;
 }
 
@@ -80,26 +84,37 @@ function CandidateCard({
   onDiscard: (id: string) => void;
 }) {
   const title = candidateTitle(candidate);
+  const tape =
+    candidate.tags && candidate.tags.is_single_garment
+      ? tapeLabel(candidate.tags)
+      : title;
   return (
-    <li className="flex gap-4 rounded-2xl border border-(--border) p-4">
-      <div className="checkerboard h-36 w-36 shrink-0 overflow-hidden rounded-xl">
+    <li className="flex gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-4 shadow-[0_10px_24px_var(--shadow)]">
+      <div className="flex h-36 w-36 shrink-0 items-center justify-center">
         {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
-        <img
+        <Sticker
           src={candidate.cutoutUrl}
           alt={candidate.tags ? `${title} in ${candidate.tags.primary_color}` : `${title} cutout`}
-          className="h-full w-full object-contain"
+          seedId={candidate.id}
+          lazy
         />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <p className="text-xl font-semibold capitalize">{title}</p>
+        <p className="self-start">
+          <Tape label={tape} seedId={candidate.id} />
+        </p>
         <p className="text-lg capitalize">{candidateSubtitle(candidate)}</p>
         <div className="mt-auto flex gap-3">
           <button
             type="button"
             disabled={locked || candidate.tagging}
-            onClick={() => onKeep(candidate.id)}
+            onClick={(event) => {
+              // Fire-and-forget stamp visual; the confirm flow is unchanged.
+              event.currentTarget.classList.add("animate-stamp");
+              onKeep(candidate.id);
+            }}
             aria-label={`${keepLabel} ${title}`}
-            className="min-h-14 flex-1 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+            className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
           >
             {keepLabel}
           </button>
@@ -108,7 +123,7 @@ function CandidateCard({
             disabled={locked || candidate.tagging}
             onClick={() => onDiscard(candidate.id)}
             aria-label={`Discard ${title}`}
-            className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+            className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
           >
             Discard
           </button>
@@ -626,7 +641,7 @@ export default function CapturePage() {
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
-      <h1 className="text-3xl font-bold">Capture</h1>
+      <h1 className="font-display text-4xl">Capture</h1>
       <p>Photograph one garment at a time against a plain background.</p>
       <input
         ref={inputRef}
@@ -642,7 +657,7 @@ export default function CapturePage() {
         type="button"
         disabled={busy}
         onClick={() => inputRef.current?.click()}
-        className="min-h-16 rounded-2xl bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+        className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
       >
         {busy ? "Working…" : "Add clothes"}
       </button>
@@ -657,7 +672,7 @@ export default function CapturePage() {
             setRetryAction(null);
             rerun();
           }}
-          className="min-h-14 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          className="min-h-14 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           Try again
         </button>
@@ -671,7 +686,7 @@ export default function CapturePage() {
       {candidates.length > 0 && (
         <section aria-label="Found garments" className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-4">
-            <h2 className="text-2xl font-bold">
+            <h2 className="font-display text-2xl">
               Found {candidates.length} item{candidates.length === 1 ? "" : "s"}
             </h2>
             {accepted.length > 0 && (
@@ -679,7 +694,7 @@ export default function CapturePage() {
                 type="button"
                 disabled={locked}
                 onClick={() => void keepAll()}
-                className="min-h-14 rounded-2xl bg-(--primary) px-6 text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                className="min-h-14 rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
               >
                 Keep all
               </button>
@@ -719,16 +734,16 @@ export default function CapturePage() {
         </section>
       )}
       {photoPrompt && photoPrompt.remaining === 0 && (
-        <section aria-label="Photo cleanup" className="flex flex-col gap-4 rounded-2xl border border-(--border) p-4">
+        <section aria-label="Photo cleanup" className="flex flex-col gap-4 rounded-full border border-(--border) p-4">
           {photoPrompt.found > 0 ? (
             <>
-              <h2 className="text-2xl font-bold">Get another item from this photo?</h2>
+              <h2 className="font-display text-2xl">Get another item from this photo?</h2>
               <div className="flex gap-3">
                 <button
                   type="button"
                   disabled={locked}
                   onClick={() => void openBacklogCrop(photoPrompt.root)}
-                  className="min-h-14 flex-1 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
                 >
                   Crop another
                 </button>
@@ -736,7 +751,7 @@ export default function CapturePage() {
                   type="button"
                   disabled={locked}
                   onClick={() => void removeFamily(photoPrompt.root)}
-                  className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   Done
                 </button>
@@ -745,13 +760,13 @@ export default function CapturePage() {
             </>
           ) : (
             <>
-              <h2 className="text-2xl font-bold">No garments found in this photo.</h2>
+              <h2 className="font-display text-2xl">No garments found in this photo.</h2>
               <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
                   disabled={locked}
                   onClick={() => void openBacklogCrop(photoPrompt.root)}
-                  className="min-h-14 flex-1 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
                 >
                   Crop another
                 </button>
@@ -762,7 +777,7 @@ export default function CapturePage() {
                     setBusy(true);
                     void scanPhoto(photoPrompt.root, "photo").finally(() => setBusy(false));
                   }}
-                  className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   Scan again
                 </button>
@@ -771,7 +786,7 @@ export default function CapturePage() {
                   disabled={locked}
                   onClick={() => void removePhoto(photoPrompt.root)}
                   aria-label="Delete this photo"
-                  className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   Delete
                 </button>
@@ -782,7 +797,7 @@ export default function CapturePage() {
       )}
       <section aria-label="Not scanned yet" className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="text-2xl font-bold">
+          <h2 className="font-display text-2xl">
             Not scanned yet ({unscanned.length})
           </h2>
           {unscanned.length > 0 && (
@@ -790,7 +805,7 @@ export default function CapturePage() {
               type="button"
               disabled={locked}
               onClick={() => void scanAll()}
-              className="min-h-14 rounded-2xl bg-(--primary) px-6 text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+              className="min-h-14 rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
             >
               Scan all
             </button>
@@ -801,7 +816,7 @@ export default function CapturePage() {
             {unscanned.map((photo, index) => (
               <li
                 key={photo.pathname}
-                className="flex flex-col gap-2 rounded-2xl border border-(--border) p-3"
+                className="flex flex-col gap-2 rounded-full border border-(--border) p-3"
               >
                 <img
                   src={photo.url}
@@ -816,7 +831,7 @@ export default function CapturePage() {
                     setBusy(true);
                     void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
                   }}
-                  className="min-h-14 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                  className="min-h-14 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
                 >
                   Find clothes
                 </button>
@@ -825,7 +840,7 @@ export default function CapturePage() {
                   disabled={locked}
                   onClick={() => void openBacklogCrop(photo)}
                   aria-label={`Crop unscanned photo ${index + 1}`}
-                  className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   Crop
                 </button>
@@ -834,7 +849,7 @@ export default function CapturePage() {
                   disabled={locked}
                   onClick={() => void removePhoto(photo)}
                   aria-label={`Delete unscanned photo ${index + 1}`}
-                  className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   Delete
                 </button>
@@ -845,14 +860,14 @@ export default function CapturePage() {
       </section>
       {scanned.length > 0 && (
         <section aria-label="Scanned photos" className="flex flex-col gap-4">
-          <h2 className="text-2xl font-bold">Scanned ({scanned.length})</h2>
+          <h2 className="font-display text-2xl">Scanned ({scanned.length})</h2>
           <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {scanned.map((photo, index) => {
               const kept = meta[photo.pathname]?.keptIds.length ?? 0;
               return (
                 <li
                   key={photo.pathname}
-                  className="flex flex-col gap-2 rounded-2xl border border-(--border) p-3"
+                  className="flex flex-col gap-2 rounded-full border border-(--border) p-3"
                 >
                   <img
                     src={photo.url}
@@ -870,7 +885,7 @@ export default function CapturePage() {
                       setBusy(true);
                       void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
                     }}
-                    className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                    className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                   >
                     Scan again
                   </button>
@@ -879,7 +894,7 @@ export default function CapturePage() {
                     disabled={locked}
                     onClick={() => void removePhoto(photo)}
                     aria-label={`Delete scanned photo ${index + 1}`}
-                    className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                    className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                   >
                     Delete
                   </button>

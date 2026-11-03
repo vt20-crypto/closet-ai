@@ -192,13 +192,13 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
 
   return (
     <section aria-label="Crop photo" className="flex flex-col gap-4">
-      <h2 className="text-2xl font-bold">Crop (optional)</h2>
+      <h2 className="font-display text-2xl">Crop (optional)</h2>
       <p className="text-lg">
         Drag inside the box to move it, drag a corner or edge to resize — or skip to use the whole photo.
       </p>
       <div
         ref={containerRef}
-        className="relative w-full touch-none overflow-hidden rounded-2xl border border-(--border) select-none"
+        className="relative w-full touch-none overflow-hidden rounded-full border border-(--border) select-none"
         style={{ touchAction: "none" }}
         onPointerDown={(event) => {
           if ((event.target as HTMLElement).closest("button") || working || !loaded) return;
@@ -264,7 +264,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={!loaded || working}
           onClick={() => void applyCrop()}
-          className="min-h-14 flex-1 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           {working ? "Cropping…" : "Use crop"}
         </button>
@@ -272,7 +272,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={working}
           onClick={() => setSelection(DEFAULT_BOX)}
-          className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+          className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
         >
           Reset
         </button>
@@ -280,7 +280,7 @@ export default function CropEditor({ imageUrl, onDone }: CropEditorProps) {
           type="button"
           disabled={working}
           onClick={() => onDone(null)}
-          className="min-h-14 flex-1 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+          className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
         >
           Skip
         </button>

@@ -21,11 +21,13 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 - 2026-11-02: daily outfits — `/today` (mood/occasion chips, destination, geolocation + city fallback, 1–3 outfit collages, shuffle); `/api/outfits` fetches Open-Meteo forecast server-side, runs a separate Spark dress-code lookup (URL only from `url_citation`), counts closet coverage in code (no model call when incomplete), picks outfits via strict-JSON Spark with server-side ID/completeness validation + one retry, excludes session-shown combos; °C server-side, °F display for en-US.
 - 2026-11-02: production-log fixes + crop — per-noun SAM logging with 429/5xx retry and concurrency 5 (all-error returns "Couldn't scan, try again"); faster tagging via 768px flattened JPEGs with per-unit `tag_ms`; tag errors retried once then shown untagged; gate rejections kept in a collapsed "Not sure these are clothes" list with Keep anyway; rescan-safe overwrites for candidates/meta only; live home-page health with Recheck; optional crop step (custom touch + keyboard-accessible cropper, no new dependencies) before upload.
 - 2026-11-03: theme system + dark-mode audit — CSS tokens (light/dark/Auto via `data-theme`, saved choice, pre-paint script, 3-way switch in top nav + Home), all screens converted, light checkerboard kept in both modes, contrast gate `scripts/check-contrast.mjs` (text ≥ 4.5:1, borders/focus ≥ 3:1).
+- 2026-11-03: "scrapbook closet" reskin — warm paper palette + Playfair Display / DM Sans / Caveat (OFL, self-hosted via `next/font/google`), sticker cutouts with id-seeded tilt and tape nickname labels, bento Home with weather sticker, sticker grids, layered outfit collages, espresso tab bar; tag schema gains `nickname` (≤ 2 words, falls back to "<color> <type>").
 
 ## Third-party code
 
 - SAM stream-event shim (`lib/meta/sam.ts`): adapted from Meta's MIT-licensed cookbook [`07_sam/01_api_basics`](https://github.com/meta-models/meta-model-cookbook/tree/main/07_sam/01_api_basics) (`typescript/sam-api.ts`) — synthesizes `response.output_text.done` from `response.content_part.done`.
 - Mask-to-cutout mapping (`lib/cutout.ts`): adapted from Meta's MIT-licensed cookbook [`07_sam/02_video_to_sticker_pack`](https://github.com/meta-models/meta-model-cookbook/tree/main/07_sam/02_video_to_sticker_pack) (`create-segmented-gif.mjs`) — mask raster scaled into its box, hole fill, alpha cutout, crop to box + padding. Ported via `spikes/01-sam-cutout.ts`.
+- Fonts (OFL 1.1, self-hosted via `next/font/google`, no runtime request to Google): [Playfair Display](https://github.com/google/fonts/tree/main/ofl/playfairdisplay), [DM Sans](https://github.com/google/fonts/tree/main/ofl/dmsans), [Caveat](https://github.com/google/fonts/tree/main/ofl/caveat).
 
 ## Not Meta
 

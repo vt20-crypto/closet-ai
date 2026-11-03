@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
+
+import { Sticker, Tape } from "../sticker";
 
 const CITY_KEY = "closet-ai-city";
 
@@ -21,6 +24,9 @@ interface ItemCard {
   cutoutUrl: string;
   type: string;
   primary_color: string;
+  /** Absent on items tagged before nicknames existed. */
+  nickname?: string;
+  layer: string;
 }
 
 interface WeatherView {
@@ -225,8 +231,8 @@ export default function TodayPage() {
     }`;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
-      <h1 className="text-3xl font-bold">Today</h1>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6 md:max-w-[960px]">
+      <h1 className="font-display text-4xl">Today</h1>
 
       <section aria-label="Mood" className="flex flex-col gap-3">
         <h2 className="text-xl font-semibold">Mood</h2>
@@ -293,7 +299,7 @@ export default function TodayPage() {
             type="button"
             disabled={busy || locating}
             onClick={useMyLocation}
-            className="min-h-14 rounded-2xl border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
           >
             {coords ? "Location set ✓" : locating ? "Locating…" : "Use my location"}
           </button>
@@ -316,7 +322,7 @@ export default function TodayPage() {
           type="button"
           disabled={busy || !mood || !occasion}
           onClick={() => void fetchOutfits([], "Getting today's outfits…")}
-          className="min-h-16 flex-1 rounded-2xl bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          className="min-h-16 flex-1 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           {busy ? "Picking…" : "Get outfits"}
         </button>
@@ -326,7 +332,7 @@ export default function TodayPage() {
             disabled={busy}
             onClick={() => void fetchOutfits(shownKeys, "Shuffling to new combinations…")}
             aria-label="Shuffle to new outfit combinations"
-            className="min-h-16 rounded-2xl border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
+            className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
           >
             Shuffle
           </button>
@@ -344,7 +350,7 @@ export default function TodayPage() {
             setRetryAction(null);
             rerun();
           }}
-          className="min-h-14 rounded-2xl bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          className="min-h-14 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
         >
           Try again
         </button>
@@ -357,7 +363,7 @@ export default function TodayPage() {
           </p>
           <Link
             href="/capture"
-            className="inline-block min-h-14 rounded-2xl bg-(--primary) px-6 py-4 text-center text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+            className="inline-block min-h-14 rounded-full bg-(--primary) px-6 py-4 text-center text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
           >
             Add clothes
           </Link>
@@ -385,38 +391,67 @@ export default function TodayPage() {
       ) : null}
 
       {outfits.length > 0 && (
-        <section aria-label="Outfits" className="flex flex-col gap-6">
+        <section aria-label="Outfits" className="flex flex-col gap-8">
           {weather && <p className="text-lg">{weatherLine(weather)}</p>}
-          {outfits.map((outfit, index) => (
-            <article
-              key={outfit.key}
-              aria-label={`Outfit ${index + 1} of ${outfits.length}`}
-              className="flex flex-col gap-3 rounded-2xl border border-(--border) p-4"
-            >
-              <h2 className="text-2xl font-bold">
-                Outfit {index + 1} of {outfits.length}
-              </h2>
-              <ul className="flex gap-2 overflow-x-auto md:flex-wrap md:overflow-visible" aria-label="Outfit garments">
-                {outfit.item_ids.map((id) => {
-                  const card = itemCards[id];
-                  if (!card) return null;
-                  return (
-                    <li key={id} className="w-28 shrink-0 md:w-36">
-                      <img
-                        src={card.cutoutUrl}
-                        alt={`${card.type} in ${card.primary_color}`}
-                        loading="lazy"
-                        className="w-full rounded-xl checkerboard object-contain"
-                      />
-                      <p className="pt-1 text-base capitalize">{card.type}</p>
-                    </li>
-                  );
-                })}
-              </ul>
-              <p className="text-lg">{outfit.reason}</p>
-              {weather && <p>{outfit.weather_note}</p>}
-            </article>
-          ))}
+          {outfits.map((outfit, index) => {
+            const cards = outfit.item_ids
+              .map((id) => ({ id, card: itemCards[id] }))
+              .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card));
+            const behind = cards.filter(({ card }) => card.layer === "outer");
+            const front = cards.filter(({ card }) => card.layer !== "outer");
+            const occasionWord = (occasionText.trim().split(/\s+/)[0] || occasion || "").toLowerCase();
+            const day = new Date().toLocaleDateString(undefined, { weekday: "short" });
+            const tapeText =
+              weather && occasionWord
+                ? `${day} · ${formatTemp(weather.highC)} · ${occasionWord}`
+                : weather
+                  ? `${day} · ${formatTemp(weather.highC)}`
+                  : `Outfit ${index + 1}`;
+            return (
+              <article
+                key={outfit.key}
+                aria-label={`Outfit ${index + 1} of ${outfits.length}`}
+                className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
+              >
+                <h2 className="font-display text-2xl">
+                  Outfit {index + 1} of {outfits.length}
+                </h2>
+                <div className="relative rounded-2xl bg-(--surface-2) px-4 pt-8 pb-4">
+                  <p className="absolute top-2 left-4 z-20">
+                    <Tape label={tapeText} seedId={outfit.key} />
+                  </p>
+                  {behind.length > 0 && (
+                    <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                      {behind.slice(0, 1).map(({ id, card }) => (
+                        <span key={id} className="h-56 opacity-90">
+                          <Sticker src={card.cutoutUrl} alt="" seedId={id} rich />
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <ul className="relative z-10 flex flex-wrap items-end justify-center gap-3" aria-label="Outfit garments">
+                    {front.map(({ id, card }) => (
+                      <li key={id} className="flex w-28 flex-col items-center md:w-36">
+                        <span className="h-36 w-full md:h-44">
+                          <Sticker
+                            src={card.cutoutUrl}
+                            alt={`${card.type} in ${card.primary_color}`}
+                            seedId={id}
+                            rich
+                          />
+                        </span>
+                        <span className="-mt-2">
+                          <Tape label={tapeLabel(card)} seedId={id} />
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <p className="text-lg">{outfit.reason}</p>
+                {weather && <p className="text-(--text-muted)">{outfit.weather_note}</p>}
+              </article>
+            );
+          })}
         </section>
       )}
     </main>

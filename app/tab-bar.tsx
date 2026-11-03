@@ -58,8 +58,8 @@ export default function TabBar() {
   return (
     <nav
       aria-label="Primary"
-      // Solid token surface in both modes. Never translucent.
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--border) bg-(--surface) text-(--text) md:hidden"
+      // Dark espresso in BOTH modes; cream labels, tomato active tab.
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--tabbar-bg) bg-(--tabbar-bg) text-(--tabbar-text) md:hidden"
     >
       <div className="mx-auto grid w-full max-w-2xl md:max-w-[960px] grid-cols-4 gap-1 px-2 pb-[env(safe-area-inset-bottom)] pt-1">
         {TABS.map((tab) => {
@@ -71,7 +71,7 @@ export default function TabBar() {
               href={tab.href}
               aria-current={active ? "page" : undefined}
               className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl text-base ${
-                active ? "bg-(--surface-2) font-semibold" : ""
+                active ? "font-bold text-(--tabbar-active)" : ""
               }`}
             >
               <Icon />

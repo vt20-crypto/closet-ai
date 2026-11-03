@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 
+import { tapeLabel } from "@/lib/labels";
+
+import { Sticker, Tape } from "../sticker";
+
 interface ClosetItem {
   id: string;
   cutoutUrl: string;
@@ -20,6 +24,8 @@ interface ClosetItem {
     pattern: string;
     seasons: string[];
     distinguishing_note: string;
+    /** Absent on items tagged before nicknames existed. */
+    nickname?: string;
   };
 }
 
@@ -81,30 +87,33 @@ export default function ClosetPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
-      <h1 className="text-3xl font-bold">Closet</h1>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6 md:max-w-[960px]">
+      <h1 className="font-display text-4xl">Closet</h1>
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
       {[...groups.entries()].map(([type, group]) => (
-        <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-4">
-          <h2 className="text-2xl font-bold capitalize">
-            {type} ({group.length})
+        <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-3">
+          <h2>
+            <Tape label={`${type} (${group.length})`} seedId={`section-${type}`} />
           </h2>
           <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {group.map((item) => (
               <li
                 key={item.id}
-                className="flex flex-col gap-2 rounded-2xl border border-(--border) p-3"
+                className="flex flex-col rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-3 shadow-[0_10px_24px_var(--shadow)]"
               >
-                <img
-                  src={item.cutoutUrl}
-                  alt={`${item.tags.type} in ${item.tags.primary_color}`}
-                  loading="lazy"
-                  className="w-full rounded-xl checkerboard object-contain"
-                />
-                <p className="text-lg font-semibold capitalize">{item.tags.type}</p>
-                <p className="capitalize">{item.tags.primary_color}</p>
+                <div className="flex min-h-44 items-center justify-center px-2 pt-2">
+                  <Sticker
+                    src={item.cutoutUrl}
+                    alt={`${item.tags.type} in ${item.tags.primary_color}`}
+                    seedId={item.id}
+                    lazy
+                  />
+                </div>
+                <p className="-mt-1 mb-2 self-center">
+                  <Tape label={tapeLabel(item.tags)} seedId={item.id} />
+                </p>
                 <details>
                   <summary className="min-h-11 cursor-pointer py-2 text-lg underline">
                     Details
@@ -151,7 +160,7 @@ export default function ClosetPage() {
                   disabled={deleting === item.id}
                   onClick={() => void remove(item.id, item.tags.type)}
                   aria-label={`Delete ${item.tags.type} in ${item.tags.primary_color}`}
-                  className="min-h-14 rounded-2xl border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+                  className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
                 >
                   {deleting === item.id ? "Deleting…" : "Delete"}
                 </button>
