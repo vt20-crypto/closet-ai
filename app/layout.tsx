@@ -44,8 +44,12 @@ export default function RootLayout({
       </head>
       <body className="bg-(--background) text-(--text)">
         <TopNav />
-        {/* Bottom padding clears the fixed tab bar + iPhone home indicator. */}
-        <div className="pb-[calc(env(safe-area-inset-bottom)+80px)] md:pb-12">{children}</div>
+        {/* Bottom padding clears the fixed tab bar + iPhone home indicator.
+            Top padding keeps page headers below the translucent status bar in
+            standalone (black-translucent); 0 on devices without a notch. */}
+        <div className="pt-[env(safe-area-inset-top)] pb-[calc(env(safe-area-inset-bottom)+80px)] md:pb-12">
+          {children}
+        </div>
         <TabBar />
       </body>
     </html>

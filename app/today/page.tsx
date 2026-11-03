@@ -6,6 +6,15 @@ import { useEffect, useState } from "react";
 import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import { slotRank } from "@/lib/outfits";
+import {
+  appendMore,
+  createPager,
+  currentPage,
+  hasMore,
+  nextPage,
+  pageRange,
+  type OutfitPagerState,
+} from "@/lib/outfitPager";
 import { speak } from "@/lib/speak";
 
 import { Sticker, Tape } from "../sticker";
@@ -84,24 +93,25 @@ export default function TodayPage() {
   const [destination, setDestination] = useState("");
   const [city, setCity] = useState("");
   const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
-  const [outfits, setOutfits] = useState<OutfitView[]>([]);
+  const [pager, setPager] = useState<OutfitPagerState<OutfitView> | null>(null);
   const [itemCards, setItemCards] = useState<Record<string, ItemCard>>({});
   const [weather, setWeather] = useState<WeatherView | null>(null);
   const [dressCode, setDressCode] = useState<DressCodeView | null>(null);
   const [missing, setMissing] = useState<string[]>([]);
-  const [shownKeys, setShownKeys] = useState<string[]>([]);
   const [status, setStatus] = useState("Pick a mood and an occasion to get dressed.");
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
   const [heard, setHeard] = useState<string | null>(null);
   const [source, setSource] = useState<"ai" | "rules">("ai");
+  const [relaxed, setRelaxed] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [voiceRequested, setVoiceRequested] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(3);
-  const [totalM, setTotalM] = useState(0);
 
-  const hasLocalMore = visibleCount < outfits.length;
+  // The cards on screen: exactly the pager's current page (at most 3).
+  const page = pager ? currentPage(pager) : [];
+  const showShuffle = pager !== null && hasMore(pager);
+  const showMoreIdeas = pager !== null && !hasMore(pager) && !exhausted;
 
   // Get outfits unlocks with any single input or a completed voice request.
   const canRun =
@@ -132,6 +142,14 @@ export default function TodayPage() {
     }
   }
 
+  /** Status line for a pager: "N looks for you" on page 1, "Look 4–6" after. */
+  function pageStatus(p: OutfitPagerState<OutfitView>): string {
+    const range = pageRange(p);
+    const n = currentPage(p).length;
+    if (range.from <= 1) return `${n} ${n === 1 ? "look" : "looks"} for you.`;
+    return `Look ${range.from}–${range.to}.`;
+  }
+
   async function fetchOutfits(
     exclude: string[],
     label: string,
@@ -143,6 +161,7 @@ export default function TodayPage() {
       destination: string;
       city: string;
     },
+    mode: "fresh" | "more" = "fresh",
   ) {
     // Mood and occasion are optional hints; the pick works without them.
     const moodV = overrides?.mood ?? mood;
@@ -153,7 +172,12 @@ export default function TodayPage() {
     setBusy(true);
     setStatus(label);
     setRetryAction(null);
-    setExhausted(false);
+    // "More ideas" appends; only a fresh pick resets the pager and flags.
+    if (mode === "fresh") {
+      setPager(null);
+      setExhausted(false);
+      setRelaxed(false);
+    }
     const hiccupTimer = window.setTimeout(
       () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
       8000,
@@ -171,11 +195,13 @@ export default function TodayPage() {
           lon: coords?.lon,
           city: cityV.trim() || undefined,
           exclude,
+          // "More ideas" accepts weaker fits; the first pick wants only strong looks.
+          ...(mode === "more" ? { minScore: 5 } : {}),
         }),
       });
       const body = (await res.json()) as {
         source?: "ai" | "rules";
-        total?: number;
+        relaxed?: boolean;
         outfits?: OutfitView[];
         items?: Record<string, ItemCard>;
         weather?: WeatherView | null;
@@ -192,53 +218,68 @@ export default function TodayPage() {
       if ((body.missing ?? []).length > 0) {
         window.clearTimeout(hiccupTimer);
         setMissing(body.missing ?? []);
-        setOutfits([]);
+        setPager(null);
         setStatus("Your closet can't make a full outfit yet.");
         return null;
       }
       setMissing([]);
       const fresh = body.outfits ?? [];
-      setTotalM(body.total ?? 0);
+      const nextWeather = body.weather ?? null;
+      const nextDress = body.dressCode ?? null;
+      if (mode === "more") {
+        window.clearTimeout(hiccupTimer);
+        setWeather(nextWeather);
+        setDressCode(nextDress);
+        // Appending to a pager captured before the await keeps every shown combo excluded.
+        const base = pager;
+        if (!base || fresh.length === 0) {
+          setExhausted(true);
+          setStatus("That's all the strong looks for this — see below.");
+          return null;
+        }
+        const grown = appendMore(base, fresh);
+        if (grown === base) {
+          setExhausted(true);
+          setStatus("That's all the strong looks for this — see below.");
+          return null;
+        }
+        setPager(grown);
+        const merged = { ...itemCards, ...(body.items ?? {}) };
+        setItemCards(merged);
+        if (body.source === "rules") setSource("rules");
+        setExhausted(false);
+        setStatus(pageStatus(grown));
+        return { outfits: currentPage(grown), items: merged, weather: nextWeather, dressCode: nextDress };
+      }
       if (fresh.length === 0) {
         window.clearTimeout(hiccupTimer);
-        // Source stays untouched on empty responses; exhaustion gets a card.
-        const done = exclude.length > 0;
-        setExhausted(done);
-        if (done) setOutfits([]);
-        setStatus(
-          done
-            ? "That's every combination — see below."
-            : "No outfits came back. Try again or change the mood.",
-        );
+        // Source stays untouched on empty responses.
+        setStatus("No outfits came back. Try again or change the mood.");
         return null;
       }
       setSource(body.source === "rules" ? "rules" : "ai");
-      setVisibleCount(3);
+      setRelaxed(body.relaxed === true);
       window.clearTimeout(hiccupTimer);
       const items = body.items ?? {};
-      const nextWeather = body.weather ?? null;
-      const nextDress = body.dressCode ?? null;
-      setOutfits(fresh);
+      const started = createPager(fresh);
+      setPager(started);
       setItemCards(items);
       setWeather(nextWeather);
       setDressCode(nextDress);
-      setShownKeys((prev) => [...prev, ...fresh.map((o) => o.key).filter((k) => !prev.includes(k))]);
-      setStatus(
-        `Outfit 1 of ${fresh.length} ready.${fresh.length > 1 ? " Swipe through them all." : ""}`,
-      );
-      return { outfits: fresh, items, weather: nextWeather, dressCode: nextDress };
+      setStatus(pageStatus(started));
+      return { outfits: currentPage(started), items, weather: nextWeather, dressCode: nextDress };
     } catch (err) {
       window.clearTimeout(hiccupTimer);
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
         setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
         await new Promise((resolve) => setTimeout(resolve, 10_000));
-        return fetchOutfits(exclude, label, true, overrides);
+        return fetchOutfits(exclude, label, true, overrides, mode);
       }
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
         setStatus("Meta's AI is still having trouble.");
         setRetryAction(() => () => {
           setRetryAction(null);
-          void fetchOutfits(exclude, label);
+          void fetchOutfits(exclude, label, false, overrides, mode);
         });
         return null;
       }
@@ -359,7 +400,7 @@ export default function TodayPage() {
               type="button"
               disabled={busy}
               aria-pressed={mood === m}
-              onClick={() => setMood(m)}
+              onClick={() => setMood(mood === m ? "" : m)}
               className={chipClass(mood === m)}
             >
               {m}
@@ -377,7 +418,7 @@ export default function TodayPage() {
               type="button"
               disabled={busy}
               aria-pressed={occasion === o}
-              onClick={() => setOccasion(o)}
+              onClick={() => setOccasion(occasion === o ? "" : o)}
               className={chipClass(occasion === o)}
             >
               {o}
@@ -463,37 +504,35 @@ export default function TodayPage() {
         >
           {busy ? "Picking…" : "Get outfits"}
         </button>
-        {outfits.length > 0 && (
+        {showShuffle && (
           <button
             type="button"
             disabled={busy}
             onClick={() => {
-              if (hasLocalMore) {
-                // Page client-side: no AI call.
-                const next = outfits.slice(visibleCount, visibleCount + 3);
-                setVisibleCount((c) => c + 3);
-                setShownKeys((prev) => [
-                  ...prev,
-                  ...next.map((o) => o.key).filter((k) => !prev.includes(k)),
-                ]);
-                setStatus(
-                  `Showing outfits ${visibleCount + 1} to ${Math.min(visibleCount + 3, outfits.length)} of ${outfits.length}.`,
-                );
-                return;
-              }
-              // Everything countable already seen: skip the wasted call.
-              if (totalM > 0 && new Set(shownKeys).size >= totalM) {
-                setOutfits([]);
-                setExhausted(true);
-                setStatus("That's every combination — see below.");
-                return;
-              }
-              void fetchOutfits(shownKeys, "Finding more ideas…");
+              // Next page of strong looks: no AI call.
+              if (!pager) return;
+              const next = nextPage(pager);
+              setPager(next);
+              setStatus(pageStatus(next));
             }}
-            aria-label={hasLocalMore ? "Shuffle to new outfit combinations" : "Get more outfit ideas"}
+            aria-label="Shuffle to new outfit combinations"
             className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
           >
-            {hasLocalMore ? "Shuffle" : "More ideas"}
+            Shuffle
+          </button>
+        )}
+        {showMoreIdeas && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (!pager) return;
+              void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
+            }}
+            aria-label="Get more outfit ideas"
+            className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
+          >
+            More ideas
           </button>
         )}
       </div>
@@ -549,30 +588,36 @@ export default function TodayPage() {
         )
       ) : null}
 
-      {exhausted && outfits.length === 0 && missing.length === 0 && (
+      {exhausted && page.length > 0 && missing.length === 0 && (
         <section
-          aria-label="No more combinations"
+          aria-label="No more strong looks"
           className="flex flex-col gap-3 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
         >
-          <h2 className="font-display text-2xl">You&apos;ve seen them all</h2>
-          <p className="text-lg">Add more clothes or change the mood for fresh picks.</p>
-          <Link
-            href="/capture"
-            className="inline-block min-h-14 rounded-full bg-(--primary) px-6 py-4 text-center text-xl font-semibold text-(--primary-text)"
+          <h2 className="font-display text-2xl">That&apos;s all the strong looks for this</h2>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (!pager) return;
+              void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
+            }}
+            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
           >
-            Add clothes
-          </Link>
+            More ideas (may be less perfect)
+          </button>
         </section>
       )}
 
-      {totalM > 0 && outfits.length > 0 && (
-        <p className="text-lg text-(--text-muted)">
-          Seen {new Set(shownKeys).size} of {totalM} outfits.
-        </p>
-      )}
-
-      {outfits.length > 0 && (
+      {page.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-8">
+          {relaxed && (
+            <div className="flex flex-wrap items-center gap-3">
+              <Tape label="Best with your current closet" seedId="relaxed" />
+              <Link href="/capture" className="text-lg underline">
+                Add clothes
+              </Link>
+            </div>
+          )}
           {source === "rules" && (
             <p className="self-start">
               <Tape label="Quick pick, AI unavailable" seedId="quick-pick" />
@@ -581,8 +626,8 @@ export default function TodayPage() {
           <button
             type="button"
             onClick={() => {
-              if (outfits.length > 0) {
-                speakOutfit(outfits[0], outfits.length, itemCards, weather, dressCode);
+              if (page.length > 0) {
+                speakOutfit(page[0], page.length, itemCards, weather, dressCode);
               }
             }}
             className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold"
@@ -590,7 +635,7 @@ export default function TodayPage() {
             Read again
           </button>
           {weather && <p className="text-lg">{weatherLine(weather)}</p>}
-          {outfits.slice(0, visibleCount).map((outfit, index) => {
+          {page.map((outfit, index) => {
             const cards = outfit.item_ids
               .map((id) => ({ id, card: itemCards[id] }))
               .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
@@ -606,11 +651,11 @@ export default function TodayPage() {
             return (
               <article
                 key={outfit.key}
-                aria-label={`Outfit ${index + 1} of ${outfits.length}`}
+                aria-label={`Outfit ${index + 1} of ${page.length}`}
                 className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
               >
                 <h2 className="font-display text-2xl">
-                  Outfit {index + 1} of {outfits.length}
+                  Outfit {index + 1} of {page.length}
                 </h2>
                 <p className="self-start">
                   <Tape label={tapeText} seedId={outfit.key} />
@@ -621,7 +666,7 @@ export default function TodayPage() {
                 >
                   {cards.map(({ id, card }) => (
                     <li key={id} className="flex flex-col items-center gap-1">
-                      <span className="flex h-40 items-center justify-center">
+                      <span className="flex aspect-[3/4] w-full items-center justify-center">
                         <Sticker
                           src={card.cutoutUrl}
                           alt={`${card.type} in ${card.primary_color}`}

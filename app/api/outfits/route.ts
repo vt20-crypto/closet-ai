@@ -9,7 +9,6 @@ import {
 } from "@/lib/meta/retry";
 import { fetchDressCode, pickOutfits } from "@/lib/meta/spark";
 import {
-  countCompleteOutfits,
   countCoverage,
   coverageMissing,
   outfitKey,
@@ -18,6 +17,7 @@ import {
   type MissingCategory,
 } from "@/lib/outfits";
 import { fallbackOutfits } from "@/lib/fallbackOutfits";
+import { applyScoreThreshold } from "@/lib/outfitScores";
 import { hashKey, readCache, writeCache } from "@/lib/cache";
 import { geocodeCity, getWeather, type WeatherSummary } from "@/lib/weather";
 
@@ -36,6 +36,8 @@ function cleanNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+
+
 export async function POST(request: Request) {
   const tAll = performance.now();
   try {
@@ -48,7 +50,10 @@ export async function POST(request: Request) {
       lon?: unknown;
       city?: unknown;
       exclude?: unknown;
+      minScore?: unknown;
     };
+    // First-pass AI threshold is 7; "More ideas" passes minScore 5.
+    const threshold = body.minScore === 5 ? 5 : 7;
     // Mood and occasion are both optional; nulls flow into the pick and the fallback.
     const mood = cleanText(body.mood);
     const occasionChip = cleanText(body.occasion);
@@ -86,12 +91,6 @@ export async function POST(request: Request) {
     const dressBudget = createRetryBudget(Date.now() + 8_000);
     const pickBudget = createRetryBudget(Date.now() + 25_000);
 
-    // Total possible combos, counted in code with the same validator.
-    // Powers "Seen N of M" on the client.
-    const totalCombos = countCompleteOutfits(
-      items.map((item) => ({ id: item.id, tags: { type: item.tags.type, layer: item.tags.layer } })),
-    );
-
     // Outfit-response cache (30 min). The key ignores excludes: cached sets
     // are filtered per request, and only exclude-free responses are stored.
     const latestCreatedAt = items.reduce((m, item) => (item.createdAt > m ? item.createdAt : m), "");
@@ -113,6 +112,7 @@ export async function POST(request: Request) {
       reason: string;
       weather_note: string;
       key: string;
+      score?: number;
     }
     interface CachedItemCard {
       cutoutUrl: string;
@@ -128,8 +128,7 @@ export async function POST(request: Request) {
       dressCode: { note: string | null; url: string | null; citations: number } | null;
     }
     const cached = await readCache<CachedResponse>(outfitCacheKey, 30 * 60 * 1000);
-    const cachedFresh =
-      cached.hit && cached.data ? cached.data.outfits.filter((o) => !excludeKeys.has(o.key)) : [];
+    const cachedAll = cached.hit && cached.data ? cached.data.outfits : [];
 
     let weather: WeatherSummary | null = null;
     let dressCode: { note: string | null; url: string | null; citations: number } | null = null;
@@ -138,12 +137,18 @@ export async function POST(request: Request) {
     let sparkMs = 0;
     let cacheStatus = "miss";
     let source: "ai" | "rules" = "ai";
+    let relaxed = false;
     let picked: CachedOutfit[] = [];
     const itemCards: Record<string, CachedItemCard> = {};
 
-    if (cachedFresh.length > 0 && cached.data) {
+    const eligibleCached = cachedAll.filter((o) => !excludeKeys.has(o.key));
+    if (eligibleCached.length > 0 && cached.data) {
       cacheStatus = "hit";
-      picked = cachedFresh;
+      // Score gate: strong outfits first; relaxes to the top 2 at/above 5
+      // so the result is never empty when valid outfits exist.
+      const gate = applyScoreThreshold(eligibleCached, threshold);
+      picked = gate.picked;
+      relaxed = gate.relaxed;
       weather = cached.data.weather;
       dressCode = cached.data.dressCode;
       const usedIds = new Set(picked.flatMap((o) => o.item_ids));
@@ -206,20 +211,26 @@ export async function POST(request: Request) {
       try {
         const raw = await pickOutfits(baseInput);
         const { valid, problems } = validateOutfits({ items, raw, excludeKeys });
+        let allValid: CachedOutfit[];
         if (valid.length === 0 && raw.length > 0) {
           const retryProblems = problems
             .map((p) => `Outfit ${p.index + 1}: ${p.reasons.join("; ")}`)
             .join(" | ");
           const rawRetry = await pickOutfits({ ...baseInput, retryProblems });
-          picked = validateOutfits({ items, raw: rawRetry, excludeKeys }).valid;
+          allValid = validateOutfits({ items, raw: rawRetry, excludeKeys }).valid;
         } else {
-          picked = valid;
+          allValid = valid;
         }
+        const gate = applyScoreThreshold(allValid, threshold);
+        picked = gate.picked;
+        relaxed = gate.relaxed;
         // Store full validated sets only (no excludes); requests with
-        // excludes read+filter the cache but never overwrite it.
-        if (picked.length > 0 && excludeKeys.size === 0) {
+        // excludes read+filter the cache but never overwrite it. The whole
+        // validated set is stored (not just the shown slice) so later
+        // requests re-apply the threshold themselves.
+        if (allValid.length > 0 && excludeKeys.size === 0) {
           const storeCards: Record<string, CachedItemCard> = {};
-          const storeUsed = new Set(picked.flatMap((o) => o.item_ids));
+          const storeUsed = new Set(allValid.flatMap((o) => o.item_ids));
           for (const item of items) {
             if (storeUsed.has(item.id)) {
               storeCards[item.id] = {
@@ -296,10 +307,11 @@ export async function POST(request: Request) {
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
       `outfits cache=${cacheStatus} weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
-        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} total=${totalCombos} source=${source}`,
+        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source}`,
     );
     return NextResponse.json({
       source,
+      relaxed,
       outfits: picked.map(({ item_ids, reason, weather_note, key }) => ({
         item_ids,
         reason,
@@ -314,7 +326,6 @@ export async function POST(request: Request) {
         searched: dressSearched,
       },
       missing: [],
-      total: totalCombos,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Outfit picking failed.";

@@ -22,6 +22,8 @@ export interface RawOutfit {
   item_ids: string[];
   reason: string;
   weather_note: string;
+  /** 1-10 style + weather + occasion fit. Absent/unscored counts as 5. */
+  score?: number;
 }
 
 export interface ValidatedOutfit extends RawOutfit {

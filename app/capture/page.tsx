@@ -90,7 +90,7 @@ function CandidateCard({
       : title;
   return (
     <li className="flex gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-4 shadow-[0_10px_24px_var(--shadow)]">
-      <div className="flex h-36 w-36 shrink-0 items-center justify-center">
+      <div className="flex aspect-[3/4] w-36 shrink-0 items-center justify-center">
         {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
         <Sticker
           src={candidate.cutoutUrl}

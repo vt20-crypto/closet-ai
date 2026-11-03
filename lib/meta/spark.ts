@@ -190,8 +190,9 @@ const OUTFIT_SCHEMA = {
           item_ids: { type: "array", items: { type: "string" } },
           reason: { type: "string" },
           weather_note: { type: "string" },
+          score: { type: "integer" },
         },
-        required: ["item_ids", "reason", "weather_note"],
+        required: ["item_ids", "reason", "weather_note", "score"],
         additionalProperties: false,
       },
     },
@@ -201,7 +202,7 @@ const OUTFIT_SCHEMA = {
 } as const;
 
 /**
- * Pick up to 9 ranked outfits from the compact closet list. No tools on
+ * Pick up to 6 ranked outfits from the compact closet list. No tools on
  * this call. Returns the raw proposals; the route validates every id
  * server-side.
  */
@@ -214,7 +215,7 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     )
     .join("\n");
   const parts = [
-    `Pick up to 9 outfits from this closet, best first (never pad with filler; fewer good outfits beat nine bad ones). Use ONLY these item ids, exactly as written:`,
+    `Pick up to 6 outfits from this closet, best first (never pad with filler; fewer good outfits beat six bad ones). Use ONLY these item ids, exactly as written:`,
     lines,
     input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
     input.mood ? `Mood: ${input.mood}.` : `No mood given; pick something versatile.`,
@@ -234,7 +235,8 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     `Each outfit must be complete: top+bottom or a dress, plus shoes if the closet has any. ` +
       `Never use the same garment type twice except layered pieces. ` +
       `weather_note is one line of clothing advice for the weather WITHOUT temperature numbers (numbers render separately). ` +
-      `reason is 20 words or fewer tying the outfit to the mood and occasion.`,
+      `reason is 20 words or fewer tying the outfit to the mood and occasion. ` +
+      `score is 1-10 for style + weather + occasion fit, best first.`,
   );
   // "minimal" is the shortest documented reasoning pass
   // (dev.meta.ai/docs/reasoning). The pick is latency-critical.
@@ -251,7 +253,7 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     input.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
-  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 9) : [];
+  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 6) : [];
 }
 
 export interface VoiceSlots {

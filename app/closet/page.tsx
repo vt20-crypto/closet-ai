@@ -104,7 +104,7 @@ export default function ClosetPage() {
                 key={item.id}
                 className="flex flex-col rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-3 shadow-[0_10px_24px_var(--shadow)]"
               >
-                <div className="flex min-h-44 items-center justify-center px-2 pt-2">
+                <div className="flex aspect-[3/4] w-full items-center justify-center px-2 pt-2">
                   <Sticker
                     src={item.cutoutUrl}
                     alt={`${item.tags.type} in ${item.tags.primary_color}`}
