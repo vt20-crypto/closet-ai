@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { TABS, isActiveTab } from "./tab-bar";
-import ThemeSwitch from "./theme-switch";
+import MeButton from "./me-button";
 
 /**
  * Top navigation for iPad and laptop (md+, i.e. ≥ 768px). Phones keep the
@@ -19,7 +19,7 @@ export default function TopNav() {
           Closet AI
         </Link>
         <div className="flex flex-wrap items-center gap-2">
-          <ThemeSwitch />
+          <MeButton />
           <nav aria-label="Primary" className="flex gap-1">
             {TABS.map((tab) => {
               const active = isActiveTab(tab.href, pathname);

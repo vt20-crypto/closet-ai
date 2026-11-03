@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 import { caveat, dmSans, playfair } from "./fonts";
@@ -10,7 +10,15 @@ export const metadata: Metadata = {
   description: "Outfits from the clothes you already own.",
 };
 
-const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem("closet-ai-theme");document.documentElement.dataset.theme=(t==="light"||t==="dark")?t:"auto"}catch(e){document.documentElement.dataset.theme="auto"}})();`;
+export const viewport: Viewport = {
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#FBF6EC" },
+    { media: "(prefers-color-scheme: dark)", color: "#17120F" },
+  ],
+};
+
+const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem("closet-ai-theme");document.documentElement.dataset.theme=(t==="light"||t==="dark")?t:"auto";var e=t==="light"||t==="dark"?t:(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");var m=document.querySelector('meta[name="theme-color"]');if(!m){m=document.createElement("meta");m.name="theme-color";document.head.appendChild(m)}m.content=e==="dark"?"#17120F":"#FBF6EC"}catch(e){document.documentElement.dataset.theme="auto"}})();`;
 
 export default function RootLayout({
   children,
@@ -23,7 +31,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${playfair.variable} ${dmSans.variable} ${caveat.variable}`}
+      className={`bg-(--background) ${playfair.variable} ${dmSans.variable} ${caveat.variable}`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
@@ -31,7 +39,7 @@ export default function RootLayout({
       <body className="bg-(--background) text-(--text)">
         <TopNav />
         {/* Bottom padding clears the fixed tab bar + iPhone home indicator. */}
-        <div className="pb-28 md:pb-12">{children}</div>
+        <div className="pb-[calc(env(safe-area-inset-bottom)+80px)] md:pb-12">{children}</div>
         <TabBar />
       </body>
     </html>

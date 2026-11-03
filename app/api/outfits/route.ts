@@ -12,6 +12,7 @@ import {
   countCoverage,
   coverageMissing,
   outfitKey,
+  slotForType,
   validateOutfits,
   type MissingCategory,
 } from "@/lib/outfits";
@@ -150,7 +151,7 @@ export async function POST(request: Request) {
     const sparkMs = Math.round(performance.now() - tSpark);
 
     const usedIds = new Set(valid.flatMap((o) => o.item_ids));
-    const itemCards: Record<string, { cutoutUrl: string; type: string; primary_color: string; nickname: string; layer: string }> = {};
+    const itemCards: Record<string, { cutoutUrl: string; type: string; primary_color: string; nickname: string; slot: string }> = {};
     for (const item of items) {
       if (usedIds.has(item.id)) {
         itemCards[item.id] = {
@@ -158,7 +159,7 @@ export async function POST(request: Request) {
           type: item.tags.type,
           primary_color: item.tags.primary_color,
           nickname: item.tags.nickname ?? "",
-          layer: item.tags.layer,
+          slot: slotForType(item.tags.type),
         };
       }
     }

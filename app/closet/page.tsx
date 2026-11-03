@@ -33,6 +33,7 @@ export default function ClosetPage() {
   const [items, setItems] = useState<ClosetItem[]>([]);
   const [status, setStatus] = useState("Loading your closet…");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,8 +95,8 @@ export default function ClosetPage() {
       </p>
       {[...groups.entries()].map(([type, group]) => (
         <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-3">
-          <h2>
-            <Tape label={`${type} (${group.length})`} seedId={`section-${type}`} />
+          <h2 className="font-display text-2xl capitalize">
+            {type} · {group.length}
           </h2>
           <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
             {group.map((item) => (
@@ -154,16 +155,41 @@ export default function ClosetPage() {
                       <dd>{item.tags.distinguishing_note}</dd>
                     </div>
                   </dl>
+                  <div className="flex gap-2 pt-2">
+                    {confirming === item.id ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={deleting === item.id}
+                          onClick={() => {
+                            setConfirming(null);
+                            void remove(item.id, item.tags.type);
+                          }}
+                          aria-label={`Confirm delete ${item.tags.type} in ${item.tags.primary_color}`}
+                          className="min-h-12 flex-1 rounded-full bg-(--danger) px-4 text-lg font-semibold text-(--background) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                        >
+                          {deleting === item.id ? "Deleting…" : "Yes, delete"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirming(null)}
+                          className="min-h-12 flex-1 rounded-full border border-(--border) px-4 text-lg font-semibold"
+                        >
+                          Keep
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirming(item.id)}
+                        aria-label={`Delete ${item.tags.type} in ${item.tags.primary_color}`}
+                        className="min-h-12 flex-1 rounded-full border border-(--border) px-4 text-lg font-semibold text-(--danger)"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 </details>
-                <button
-                  type="button"
-                  disabled={deleting === item.id}
-                  onClick={() => void remove(item.id, item.tags.type)}
-                  aria-label={`Delete ${item.tags.type} in ${item.tags.primary_color}`}
-                  className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-                >
-                  {deleting === item.id ? "Deleting…" : "Delete"}
-                </button>
               </li>
             ))}
           </ul>

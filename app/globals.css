@@ -130,18 +130,23 @@ body::before {
 
 /* Sticker die-cuts. The outline is constant white in both modes: a physical
    sticker edge, not a theme surface (documented exception to tokens-only).
-   .sticker-rich (4× outline) is for Home and /today only; the /closet grid
-   and capture cards use cheaper .sticker-lite (2×). */
+   Each 4-direction ring adds ~1px of edge; rich stacks 3 rings (~3px) for
+   Home and /today, lite uses 1 ring for the /closet grid and capture cards. */
 .sticker-rich {
   filter:
-    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
-    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
+    drop-shadow(1px 0 0 #ffffff) drop-shadow(-1px 0 0 #ffffff)
+    drop-shadow(0 1px 0 #ffffff) drop-shadow(0 -1px 0 #ffffff)
+    drop-shadow(1px 0 0 #ffffff) drop-shadow(-1px 0 0 #ffffff)
+    drop-shadow(0 1px 0 #ffffff) drop-shadow(0 -1px 0 #ffffff)
+    drop-shadow(1px 1px 0 #ffffff) drop-shadow(-1px 1px 0 #ffffff)
+    drop-shadow(1px -1px 0 #ffffff) drop-shadow(-1px -1px 0 #ffffff)
     drop-shadow(0 12px 16px var(--shadow));
 }
 
 .sticker-lite {
   filter:
-    drop-shadow(0 0 0 #ffffff) drop-shadow(0 0 0 #ffffff)
+    drop-shadow(1px 0 0 #ffffff) drop-shadow(-1px 0 0 #ffffff)
+    drop-shadow(0 1px 0 #ffffff) drop-shadow(0 -1px 0 #ffffff)
     drop-shadow(0 8px 12px var(--shadow));
 }
 

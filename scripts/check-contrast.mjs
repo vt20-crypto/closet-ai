@@ -58,6 +58,7 @@ const TEXT_PAIRS = [
   ["disabled-text", "disabled-bg"],
   ["danger", "background"],
   ["danger", "surface"],
+  ["background", "danger"],
   ["tabbar-text", "tabbar-bg"],
   ["tabbar-active", "tabbar-bg"],
 ];

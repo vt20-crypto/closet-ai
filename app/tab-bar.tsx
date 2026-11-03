@@ -21,7 +21,7 @@ function TodayIcon() {
   );
 }
 
-function AddIcon() {
+export function AddIcon() {
   return (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
       <circle cx="12" cy="12" r="8.5" />
@@ -30,7 +30,7 @@ function AddIcon() {
   );
 }
 
-function ClosetIcon() {
+export function ClosetIcon() {
   return (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <rect x="4" y="4" width="7" height="7" rx="1.5" />
@@ -59,9 +59,9 @@ export default function TabBar() {
     <nav
       aria-label="Primary"
       // Dark espresso in BOTH modes; cream labels, tomato active tab.
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--tabbar-bg) bg-(--tabbar-bg) text-(--tabbar-text) md:hidden"
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-(--tabbar-bg) bg-(--tabbar-bg) pb-[env(safe-area-inset-bottom)] text-(--tabbar-text) md:hidden"
     >
-      <div className="mx-auto grid w-full max-w-2xl md:max-w-[960px] grid-cols-4 gap-1 px-2 pb-[env(safe-area-inset-bottom)] pt-1">
+      <div className="mx-auto grid w-full max-w-2xl grid-cols-4 gap-1 px-2 pt-1 md:max-w-[960px]">
         {TABS.map((tab) => {
           const active = isActiveTab(tab.href, pathname);
           const Icon = tab.Icon;

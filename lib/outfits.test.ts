@@ -6,6 +6,8 @@ import {
   coverageMissing,
   normalizeOutfitType,
   outfitKey,
+  slotForType,
+  slotRank,
   validateOutfits,
   type OutfitItemLike,
 } from "./outfits.ts";
@@ -134,4 +136,16 @@ test("shoes are not required when the closet has none", () => {
     raw: [{ item_ids: ["t1", "b1"], reason: "r", weather_note: "w" }],
   });
   assert.equal(valid.length, 1);
+});
+
+test("flat-lay slots order outer before top, shoes last", () => {
+  const slots = ["sneakers", "jeans", "coat", "shirt", "dress"].map(slotForType);
+  assert.deepEqual(slots, ["shoes", "bottom", "outer", "top", "dress"]);
+  const ordered = [...slots].sort((a, b) => slotRank(a) - slotRank(b));
+  assert.deepEqual(ordered, ["outer", "top", "dress", "bottom", "shoes"]);
+});
+
+test("flat-lay slots put unknown types last", () => {
+  assert.equal(slotForType("handbag"), "other");
+  assert.ok(slotRank("other") > slotRank("shoes"));
 });

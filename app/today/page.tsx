@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
+import { slotRank } from "@/lib/outfits";
 
 import { Sticker, Tape } from "../sticker";
 
@@ -26,7 +27,7 @@ interface ItemCard {
   primary_color: string;
   /** Absent on items tagged before nicknames existed. */
   nickname?: string;
-  layer: string;
+  slot: string;
 }
 
 interface WeatherView {
@@ -51,11 +52,21 @@ function formatTemp(celsius: number): string {
   return `${Math.round(celsius)}°C`;
 }
 
+function isEnUS(): boolean {
+  return typeof navigator !== "undefined" && navigator.language === "en-US";
+}
+
+/** Server computes wind in kph; display mph for en-US, kph otherwise. */
+function formatWind(kph: number): string {
+  if (isEnUS()) return `${Math.round(kph * 0.621371)} mph`;
+  return `${Math.round(kph)} kph`;
+}
+
 function weatherLine(weather: WeatherView): string {
   const place = weather.placeName ? `${weather.placeName}: ` : "";
   return (
     `${place}High ${formatTemp(weather.highC)}, low ${formatTemp(weather.lowC)}, ` +
-    `${weather.precipChancePct}% rain, wind ${weather.windKph} kph.`
+    `${weather.precipChancePct}% rain, wind ${formatWind(weather.windKph)}.`
   );
 }
 
@@ -396,9 +407,8 @@ export default function TodayPage() {
           {outfits.map((outfit, index) => {
             const cards = outfit.item_ids
               .map((id) => ({ id, card: itemCards[id] }))
-              .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card));
-            const behind = cards.filter(({ card }) => card.layer === "outer");
-            const front = cards.filter(({ card }) => card.layer !== "outer");
+              .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
+              .sort((a, b) => slotRank(a.card.slot) - slotRank(b.card.slot));
             const occasionWord = (occasionText.trim().split(/\s+/)[0] || occasion || "").toLowerCase();
             const day = new Date().toLocaleDateString(undefined, { weekday: "short" });
             const tapeText =
@@ -416,37 +426,29 @@ export default function TodayPage() {
                 <h2 className="font-display text-2xl">
                   Outfit {index + 1} of {outfits.length}
                 </h2>
-                <div className="relative rounded-2xl bg-(--surface-2) px-4 pt-8 pb-4">
-                  <p className="absolute top-2 left-4 z-20">
-                    <Tape label={tapeText} seedId={outfit.key} />
-                  </p>
-                  {behind.length > 0 && (
-                    <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                      {behind.slice(0, 1).map(({ id, card }) => (
-                        <span key={id} className="h-56 opacity-90">
-                          <Sticker src={card.cutoutUrl} alt="" seedId={id} rich />
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <ul className="relative z-10 flex flex-wrap items-end justify-center gap-3" aria-label="Outfit garments">
-                    {front.map(({ id, card }) => (
-                      <li key={id} className="flex w-28 flex-col items-center md:w-36">
-                        <span className="h-36 w-full md:h-44">
-                          <Sticker
-                            src={card.cutoutUrl}
-                            alt={`${card.type} in ${card.primary_color}`}
-                            seedId={id}
-                            rich
-                          />
-                        </span>
-                        <span className="-mt-2">
-                          <Tape label={tapeLabel(card)} seedId={id} />
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                <p className="self-start">
+                  <Tape label={tapeText} seedId={outfit.key} />
+                </p>
+                <ul
+                  className="grid grid-cols-2 gap-4 rounded-2xl bg-(--surface-2) p-4 md:grid-cols-3"
+                  aria-label="Outfit garments, laid flat"
+                >
+                  {cards.map(({ id, card }) => (
+                    <li key={id} className="flex flex-col items-center gap-1">
+                      <span className="flex h-40 items-center justify-center">
+                        <Sticker
+                          src={card.cutoutUrl}
+                          alt={`${card.type} in ${card.primary_color}`}
+                          seedId={id}
+                          rich
+                        />
+                      </span>
+                      <span className="-mt-2">
+                        <Tape label={tapeLabel(card)} seedId={id} />
+                      </span>
+                    </li>
+                  ))}
+                </ul>
                 <p className="text-lg">{outfit.reason}</p>
                 {weather && <p className="text-(--text-muted)">{outfit.weather_note}</p>}
               </article>

@@ -175,3 +175,17 @@ export function validateOutfits(input: ValidationInput): {
 
   return { valid, problems };
 }
+
+/** Flat-lay slot order for /today: outer first, shoes last, the rest by body. */
+export const SLOT_ORDER: OutfitCategory[] = ["outer", "top", "dress", "bottom", "shoes", "other"];
+
+/** Display slot for a garment type (reuses the completeness categories). */
+export function slotForType(type: string): OutfitCategory {
+  return normalizeOutfitType(type);
+}
+
+/** Rank for flat-lay ordering; unknown categories go last. */
+export function slotRank(category: string): number {
+  const rank = (SLOT_ORDER as string[]).indexOf(category);
+  return rank === -1 ? SLOT_ORDER.length : rank;
+}
