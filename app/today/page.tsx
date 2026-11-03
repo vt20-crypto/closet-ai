@@ -107,6 +107,8 @@ export default function TodayPage() {
   const [heard, setHeard] = useState<string | null>(null);
   const [relaxed, setRelaxed] = useState(false);
   const [depletedKey, setDepletedKey] = useState<string | null>(null);
+  const [ranKey, setRanKey] = useState<string | null>(null);
+  const [rulesNoteKey, setRulesNoteKey] = useState<string | null>(null);
   const [voiceRequested, setVoiceRequested] = useState(false);
 
   // The cards on screen: exactly the pager's current page (at most 3).
@@ -134,6 +136,8 @@ export default function TodayPage() {
     coords?.lon ?? "",
   ].join("|");
   const moreDepleted = depletedKey !== null && depletedKey === inputsKey;
+  // After results exist, Get outfits rests until the inputs change again.
+  const getStale = pager !== null && ranKey === inputsKey;
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -156,19 +160,28 @@ export default function TodayPage() {
     }
   }
 
-  /** Status line names each card's own origin: AI picks vs quick picks. */
+  /** Status line counts the cards shown; each card's badge carries its origin. */
   function pageStatus(p: OutfitPagerState<OutfitView>): string {
-    const cards = currentPage(p);
-    const n = cards.length;
-    const rules = cards.filter((o) => o.source === "rules").length;
+    const n = currentPage(p).length;
     const range = pageRange(p);
-    const head =
-      range.from <= 1
-        ? `${n} ${n === 1 ? "look" : "looks"} for you`
-        : `Look ${range.from}–${range.to}`;
-    if (rules === 0) return `${head}, picked by Meta AI.`;
-    if (rules === n) return `AI was unavailable, here are ${n} quick picks.`;
-    return `${head} — ${n - rules} picked by Meta AI, ${rules} quick picks.`;
+    if (range.from <= 1) return `${n} ${n === 1 ? "look" : "looks"} for you.`;
+    return `Look ${range.from}–${range.to}.`;
+  }
+
+  /** Tiny spark mark for the quiet credit line under each outfit. */
+  function SparkIcon() {
+    return (
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 12 12"
+        fill="currentColor"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path d="M6 0l1.2 4.8L12 6 7.2 7.2 6 12 4.8 7.2 0 6l4.8-1.2z" />
+      </svg>
+    );
   }
 
   async function fetchOutfits(
@@ -276,6 +289,19 @@ export default function TodayPage() {
       // Stamp every card with its own response's source; nothing carries over.
       const bodySource: "ai" | "rules" = body.source === "rules" ? "rules" : "ai";
       setRelaxed(body.relaxed === true);
+      // Remember the inputs these results were picked for (voice fills the
+      // same overrides, so voice requests count as a change too).
+      setRanKey(
+        [
+          moodV ?? "",
+          occasionV ?? "",
+          occasionTextV,
+          destinationV,
+          cityV,
+          coords?.lat ?? "",
+          coords?.lon ?? "",
+        ].join("|"),
+      );
       window.clearTimeout(hiccupTimer);
       const items = body.items ?? {};
       const started = createPager(fresh.map((o) => ({ ...o, source: bodySource })));
@@ -506,10 +532,10 @@ export default function TodayPage() {
       {!canRun && !busy && (
         <p className="text-lg text-(--text-muted)">Pick a mood or occasion, or tap to talk.</p>
       )}
-      <div className="flex gap-3">
+      <div className="flex flex-col gap-3 min-[480px]:flex-row">
         <button
           type="button"
-          disabled={busy || !canRun}
+          disabled={busy || !canRun || getStale}
           onClick={() =>
             void fetchOutfits([], "Getting today's outfits…").then((run) => {
               if (run && run.outfits.length > 0) {
@@ -517,7 +543,7 @@ export default function TodayPage() {
               }
             })
           }
-          className="min-h-16 flex-1 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          className="min-h-16 w-full min-w-44 rounded-full bg-(--primary) text-xl font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) min-[480px]:flex-1"
         >
           {busy ? "Picking…" : "Get outfits"}
         </button>
@@ -533,7 +559,7 @@ export default function TodayPage() {
               setStatus(pageStatus(next));
             }}
             aria-label="Shuffle to new outfit combinations"
-            className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
+            className="min-h-16 w-full shrink-0 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text) min-[480px]:w-auto"
           >
             Shuffle
           </button>
@@ -547,12 +573,15 @@ export default function TodayPage() {
               void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
             }}
             aria-label="More ideas, asks AI again"
-            className="min-h-16 rounded-full border border-(--border) px-6 text-xl font-semibold disabled:text-(--disabled-text)"
+            className="min-h-16 w-full shrink-0 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text) min-[480px]:w-auto"
           >
             More ideas (asks AI again)
           </button>
         )}
       </div>
+      {getStale && canRun && !busy && (
+        <p className="text-lg text-(--text-muted)">Change mood or occasion for new looks</p>
+      )}
 
       <p role="status" aria-live="polite" className="text-lg">
         {status}
@@ -652,16 +681,31 @@ export default function TodayPage() {
                 <p className="self-start">
                   <Tape label={tapeText} seedId={outfit.key} />
                 </p>
-                <p className="self-start">
-                  <Tape
-                    label={
-                      outfit.source === "rules"
-                        ? "Quick pick, AI was unavailable"
-                        : "Picked by Meta AI"
-                    }
-                    seedId={`${outfit.key}-source`}
-                  />
-                </p>
+                {outfit.source === "rules" ? (
+                  <div className="self-start">
+                    <button
+                      type="button"
+                      aria-expanded={rulesNoteKey === outfit.key}
+                      onClick={() =>
+                        setRulesNoteKey((k) => (k === outfit.key ? null : outfit.key))
+                      }
+                      className="flex min-h-11 items-center gap-1 text-[13px] text-(--text-muted) underline decoration-dotted underline-offset-4"
+                    >
+                      <SparkIcon />
+                      Quick pick
+                    </button>
+                    {rulesNoteKey === outfit.key && (
+                      <p className="text-[13px] text-(--text-muted)">
+                        AI was busy, so this pick uses simple style rules.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="flex items-center gap-1 self-start text-[13px] text-(--text-muted)">
+                    <SparkIcon />
+                    Styled by AI
+                  </p>
+                )}
                 <ul
                   className="grid grid-cols-2 gap-4 rounded-2xl bg-(--surface-2) p-4 md:grid-cols-3"
                   aria-label="Outfit garments, laid flat"

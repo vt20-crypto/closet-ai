@@ -58,6 +58,10 @@ export default function MeButton() {
             {count === null ? "Counting closet…" : `${count} item${count === 1 ? "" : "s"} in your closet.`}
           </p>
           <HealthStatus />
+          <p className="text-sm text-(--text-muted)">
+            About: Outfit suggestions by Muse Spark via Meta&apos;s Model API. Garment cutouts by
+            SAM 3.1. Voice by Muse Voice Transcribe.
+          </p>
           <button
             type="button"
             disabled
