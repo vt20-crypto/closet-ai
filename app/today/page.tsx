@@ -14,7 +14,7 @@ import VoiceButton, { type VoiceSlots } from "./voice-button";
 const CITY_KEY = "closet-ai-city";
 
 const MOODS = ["calm", "confident", "cozy", "bold", "lazy"] as const;
-const OCCASIONS = ["work", "class", "date", "gym", "party", "errands"] as const;
+const OCCASIONS = ["work", "class", "date", "gym", "party", "errands", "brunch", "dinner"] as const;
 
 interface OutfitView {
   item_ids: string[];
@@ -95,6 +95,7 @@ export default function TodayPage() {
   const [locating, setLocating] = useState(false);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
   const [heard, setHeard] = useState<string | null>(null);
+  const [source, setSource] = useState<"ai" | "rules">("ai");
 
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
@@ -121,17 +122,20 @@ export default function TodayPage() {
     exclude: string[],
     label: string,
     isRetry = false,
-    overrides?: { mood: string; occasion: string; occasionText: string; destination: string; city: string },
+    overrides?: {
+      mood: string | null;
+      occasion: string | null;
+      occasionText: string;
+      destination: string;
+      city: string;
+    },
   ) {
+    // Mood and occasion are optional hints; the pick works without them.
     const moodV = overrides?.mood ?? mood;
     const occasionV = overrides?.occasion ?? occasion;
     const occasionTextV = overrides?.occasionText ?? occasionText;
     const destinationV = overrides?.destination ?? destination;
     const cityV = overrides?.city ?? city;
-    if (!moodV || !occasionV) {
-      setStatus("Pick a mood and an occasion first.");
-      return null;
-    }
     setBusy(true);
     setStatus(label);
     setRetryAction(null);
@@ -155,6 +159,7 @@ export default function TodayPage() {
         }),
       });
       const body = (await res.json()) as {
+        source?: "ai" | "rules";
         outfits?: OutfitView[];
         items?: Record<string, ItemCard>;
         weather?: WeatherView | null;
@@ -176,6 +181,7 @@ export default function TodayPage() {
         return null;
       }
       setMissing([]);
+      setSource(body.source === "rules" ? "rules" : "ai");
       const fresh = body.outfits ?? [];
       if (fresh.length === 0) {
         window.clearTimeout(hiccupTimer);
@@ -284,9 +290,13 @@ export default function TodayPage() {
       const clean = value.toLowerCase();
       return (list as readonly string[]).includes(clean) ? clean : null;
     };
+    // Anything that isn't a chip word becomes occasion detail text.
     const moodV = matchChip(slots.mood, MOODS) ?? mood;
     const occasionV = matchChip(slots.occasion, OCCASIONS) ?? occasion;
-    const occasionTextV = slots.occasion_text ?? "";
+    const extra = [slots.mood && !moodV ? slots.mood : null, slots.occasion && !occasionV ? slots.occasion : null]
+      .filter(Boolean)
+      .join(" ");
+    const occasionTextV = [extra, slots.occasion_text ?? ""].filter(Boolean).join(" ");
     const destinationV = slots.destination ?? "";
     if (moodV) setMood(moodV);
     if (occasionV) setOccasion(occasionV);
@@ -294,11 +304,6 @@ export default function TodayPage() {
     setDestination(destinationV);
     if (slots.city) handleCityChange(slots.city);
     setHeard(transcript);
-    if (!moodV || !occasionV) {
-      const missing = [!moodV && "a mood", !occasionV && "an occasion"].filter(Boolean).join(" and ");
-      reportVoice(`I heard you — pick ${missing}, then get outfits.`);
-      return;
-    }
     const run = await fetchOutfits([], "Getting today's outfits…", false, {
       mood: moodV,
       occasion: occasionV,
@@ -420,7 +425,7 @@ export default function TodayPage() {
       <div className="flex gap-3">
         <button
           type="button"
-          disabled={busy || !mood || !occasion}
+          disabled={busy}
           onClick={() =>
             void fetchOutfits([], "Getting today's outfits…").then((run) => {
               if (run && run.outfits.length > 0) {
@@ -498,6 +503,11 @@ export default function TodayPage() {
 
       {outfits.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-8">
+          {source === "rules" && (
+            <p className="self-start">
+              <Tape label="Quick pick, AI unavailable" seedId="quick-pick" />
+            </p>
+          )}
           <button
             type="button"
             onClick={() => {

@@ -2,10 +2,10 @@ import "server-only";
 
 import {
   isTransientModel404,
-  logModel404Retry,
-  model404RetryDelayMs,
   sleep,
+  sleepForTransient404,
   sleepWithinBudget,
+  type ModelRetryCounters,
   type RetryBudget,
 } from "./retry";
 
@@ -68,7 +68,7 @@ export async function transcribeWav(
   if (opts.keywords && opts.keywords.length > 0) requestJson.keywords = opts.keywords;
 
   const started = Date.now();
-  let retries404 = 0;
+  const retryCounters: ModelRetryCounters = { retries404: 0 };
   let retriesBackoff = 0;
   for (;;) {
     try {
@@ -101,13 +101,19 @@ export async function transcribeWav(
       return out;
     } catch (err) {
       const status = (err as StatusError)?.status;
-      if (isTransientModel404(err) && retries404 < 4) {
-        logModel404Retry("transcribe", retries404, err);
-        const delay = model404RetryDelayMs(retries404);
-        retries404 += 1;
-        if (opts.budget && !(await sleepWithinBudget(delay, opts.budget))) throw err;
-        if (!opts.budget) await sleep(delay);
-        continue;
+      // Shared branch with every other Meta call path (see retry.ts).
+      if (isTransientModel404(err)) {
+        if (
+          await sleepForTransient404({
+            context: "transcribe",
+            err,
+            counters: retryCounters,
+            budget: opts.budget,
+          })
+        ) {
+          continue;
+        }
+        throw err;
       }
       const retryable = status === 429 || (typeof status === "number" && status >= 500);
       if (retryable && retriesBackoff < 3) {

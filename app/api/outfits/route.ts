@@ -16,6 +16,7 @@ import {
   validateOutfits,
   type MissingCategory,
 } from "@/lib/outfits";
+import { fallbackOutfits } from "@/lib/fallbackOutfits";
 import { geocodeCity, getWeather, type WeatherSummary } from "@/lib/weather";
 
 export const maxDuration = 60;
@@ -46,14 +47,16 @@ export async function POST(request: Request) {
       city?: unknown;
       exclude?: unknown;
     };
+    // Mood and occasion are both optional; nulls flow into the pick and the fallback.
     const mood = cleanText(body.mood);
     const occasionChip = cleanText(body.occasion);
-    if (!mood || !occasionChip) {
-      return NextResponse.json({ error: "mood and occasion are required." }, { status: 400 });
-    }
     const occasionText = cleanText(body.occasionText);
     const destination = cleanText(body.destination);
-    const occasion = occasionText ? `${occasionChip} (${occasionText})` : occasionChip;
+    const occasion = occasionChip
+      ? occasionText
+        ? `${occasionChip} (${occasionText})`
+        : occasionChip
+      : occasionText;
     const excludeKeys = new Set<string>();
     if (Array.isArray(body.exclude)) {
       for (const combo of body.exclude) {
@@ -76,7 +79,9 @@ export async function POST(request: Request) {
     const city = cleanText(body.city);
     const venue = destination ?? occasionText;
     // One 25s retry budget shared by the dress search and the pick.
-    const retryBudget = createRetryBudget(tAll + 25_000);
+    // Date.now-based: sleepWithinBudget compares against Date.now(), so a
+    // performance.now() value here would silently disable every retry.
+    const retryBudget = createRetryBudget(Date.now() + 25_000);
 
     let weatherMs = 0;
     let dressMs = 0;
@@ -137,20 +142,49 @@ export async function POST(request: Request) {
     };
 
     const tSpark = performance.now();
-    const raw = await pickOutfits(baseInput);
-    let { valid, problems } = validateOutfits({ items, raw, excludeKeys });
-    if (valid.length === 0 && raw.length > 0) {
-      const retryProblems = problems
-        .map((p) => `Outfit ${p.index + 1}: ${p.reasons.join("; ")}`)
-        .join(" | ");
-      const rawRetry = await pickOutfits({ ...baseInput, retryProblems });
-      const second = validateOutfits({ items, raw: rawRetry, excludeKeys });
-      valid = second.valid;
-      problems = second.problems;
+    let source: "ai" | "rules" = "ai";
+    let picked: { item_ids: string[]; reason: string; weather_note: string; key: string }[] = [];
+    try {
+      const raw = await pickOutfits(baseInput);
+      const { valid, problems } = validateOutfits({ items, raw, excludeKeys });
+      if (valid.length === 0 && raw.length > 0) {
+        const retryProblems = problems
+          .map((p) => `Outfit ${p.index + 1}: ${p.reasons.join("; ")}`)
+          .join(" | ");
+        const rawRetry = await pickOutfits({ ...baseInput, retryProblems });
+        picked = validateOutfits({ items, raw: rawRetry, excludeKeys }).valid;
+      } else {
+        picked = valid;
+      }
+    } catch (err) {
+      // Spark pick failed (Meta outage): deterministic rule-based fallback
+      // instead of an error. Anything non-Meta still throws to the 500 path.
+      if (!isMetaApiError(err)) throw err;
+      console.log(`outfits pick failed, using rule fallback: ${(err as Error).message.slice(0, 120)}`);
+      const fbItems = items.map((item) => ({
+        id: item.id,
+        tags: {
+          type: item.tags.type,
+          primary_color: item.tags.primary_color,
+          formality: item.tags.formality,
+          warmth: item.tags.warmth,
+          layer: item.tags.layer,
+          pattern: item.tags.pattern,
+          nickname: item.tags.nickname ?? "",
+        },
+      }));
+      picked = fallbackOutfits(
+        fbItems,
+        weather ? { highC: weather.highC, lowC: weather.lowC } : { highC: 20, lowC: 14 },
+        mood,
+        occasionChip,
+        [...excludeKeys],
+      ).map((o) => ({ ...o, weather_note: "", key: outfitKey(o.item_ids) }));
+      source = "rules";
     }
     const sparkMs = Math.round(performance.now() - tSpark);
 
-    const usedIds = new Set(valid.flatMap((o) => o.item_ids));
+    const usedIds = new Set(picked.flatMap((o) => o.item_ids));
     const itemCards: Record<string, { cutoutUrl: string; type: string; primary_color: string; nickname: string; slot: string }> = {};
     for (const item of items) {
       if (usedIds.has(item.id)) {
@@ -167,10 +201,11 @@ export async function POST(request: Request) {
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
       `outfits weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
-        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${valid.length}`,
+        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} source=${source}`,
     );
     return NextResponse.json({
-      outfits: valid.map(({ item_ids, reason, weather_note, key }) => ({
+      source,
+      outfits: picked.map(({ item_ids, reason, weather_note, key }) => ({
         item_ids,
         reason,
         weather_note,

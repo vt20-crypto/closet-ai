@@ -27,7 +27,9 @@ export async function GET(request: Request) {
           input: "Reply with the single word: ok",
         }),
       undefined,
-      createRetryBudget(started + 15_000),
+      // Date.now-based: sleepWithinBudget compares against Date.now(), so a
+      // performance.now() value here would silently disable every retry.
+      createRetryBudget(Date.now() + 15_000),
     );
     const latencyMs = Math.round(performance.now() - started);
     const text = response.output_text ?? "";

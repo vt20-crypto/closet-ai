@@ -10,9 +10,8 @@ import {
 import { getMetaClient } from "./client";
 import {
   isTransientModel404,
-  logModel404Retry,
-  model404RetryDelayMs,
-  sleepWithinBudget,
+  sleepForTransient404,
+  type ModelRetryCounters,
   type RetryBudget,
 } from "./retry";
 
@@ -185,7 +184,7 @@ export async function segmentBytes(
     detections: [],
     retried,
   });
-  let retries404 = 0;
+  const retryCounters: ModelRetryCounters = { retries404: 0 };
   let retriesBackoff = 0;
   let retried = false;
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -241,17 +240,20 @@ export async function segmentBytes(
       // The model declines some images; a 400 is final, not worth retrying.
       if (status === 400) return failure(err);
       // Intermittent 404 "model not found" from the hosting edge: transient.
+      // Shared branch with every other Meta call path (see retry.ts).
       if (isTransientModel404(err)) {
-        if (retries404 >= 4) return failure(err);
-        logModel404Retry(`sam noun=${noun}`, retries404, err);
-        const delay = model404RetryDelayMs(retries404);
-        if (retryBudget && !(await sleepWithinBudget(delay, retryBudget))) {
-          return failure(err);
+        if (
+          await sleepForTransient404({
+            context: `sam noun=${noun}`,
+            err,
+            counters: retryCounters,
+            budget: retryBudget,
+          })
+        ) {
+          retried = true;
+          continue;
         }
-        if (!retryBudget) await sleep(delay);
-        retries404 += 1;
-        retried = true;
-        continue;
+        return failure(err);
       }
       const backoff = retryAfterMs(err, retriesBackoff);
       if (backoff !== null && retriesBackoff < 3) {

@@ -5,10 +5,9 @@ import type { RawOutfit } from "../outfits";
 import { getMetaClient } from "./client";
 import {
   isTransientModel404,
-  logModel404Retry,
-  model404RetryDelayMs,
-  sleepWithinBudget,
+  sleepForTransient404,
   withTransient404Retry,
+  type ModelRetryCounters,
   type RetryBudget,
 } from "./retry";
 import { TAG_SCHEMA, type GarmentTags } from "./tagSchema";
@@ -136,8 +135,8 @@ export interface ClosetLine {
 export interface PickOutfitsInput {
   closet: ClosetLine[];
   weatherLine: string | null;
-  mood: string;
-  occasion: string;
+  mood: string | null;
+  occasion: string | null;
   destination: string | null;
   dressCodeNote: string | null;
   excludeKeys: string[];
@@ -184,7 +183,8 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     `Pick at most 3 outfits from this closet (never pad with filler; fewer good outfits beat three bad ones). Use ONLY these item ids, exactly as written:`,
     lines,
     input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
-    `Mood: ${input.mood}. Occasion: ${input.occasion}.`,
+    input.mood ? `Mood: ${input.mood}.` : `No mood given; pick something versatile.`,
+    input.occasion ? `Occasion: ${input.occasion}.` : `No occasion given; pick everyday outfits.`,
   ];
   if (input.destination) parts.push(`Destination: ${input.destination}.`);
   if (input.dressCodeNote) parts.push(`Dress code to respect: ${input.dressCodeNote}`);
@@ -254,8 +254,10 @@ export async function parseVoiceSlots(
   const api = getMetaClient();
   const prompt =
     `The user spoke to plan an outfit. Extract each slot or null when absent. ` +
-    `mood is one word for how they want to feel; occasion is one word for the event type ` +
-    `(work, class, date, gym, party, errands); occasion_text is any extra detail; ` +
+    `mood is one word for how they want to feel ` +
+    `(prefer: calm, confident, cozy, bold, lazy); occasion is one word for the event type ` +
+    `(prefer: work, class, date, gym, party, errands, brunch, dinner); ` +
+    `occasion_text is any extra detail; ` +
     `destination is a named venue or place; city is where they are or are going. ` +
     `Transcript: ${JSON.stringify(transcript.slice(0, 500))}`;
   const started = Date.now();
@@ -329,7 +331,7 @@ export async function tagGarment(
 ): Promise<TagResult> {
   const api = getMetaClient();
   const prompt = opts?.isPair ? BASE_PROMPT + PAIR_PROMPT : BASE_PROMPT;
-  let retries404 = 0;
+  const retryCounters: ModelRetryCounters = { retries404: 0 };
   let retriesBackoff = 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
@@ -360,17 +362,18 @@ export async function tagGarment(
         return { tags: rejected("content_policy_violation"), errored: false };
       }
       if (isTransientModel404(err)) {
-        if (retries404 >= 4) {
-          return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
+        // Shared branch with every other Meta call path (see retry.ts).
+        if (
+          await sleepForTransient404({
+            context: "spark tag",
+            err,
+            counters: retryCounters,
+            budget: opts?.budget,
+          })
+        ) {
+          continue;
         }
-        logModel404Retry("spark tag", retries404, err);
-        const delay = model404RetryDelayMs(retries404);
-        if (opts?.budget && !(await sleepWithinBudget(delay, opts.budget))) {
-          return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
-        }
-        if (!opts?.budget) await sleep(delay);
-        retries404 += 1;
-        continue;
+        return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
       }
       if (status === 429 && retriesBackoff < 3) {
         const headers = (err as { headers?: unknown })?.headers;

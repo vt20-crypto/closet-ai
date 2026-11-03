@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test lib/cutout.test.ts lib/filters.test.ts lib/photoPaths.test.ts lib/outfits.test.ts lib/meta/retry.test.ts lib/ndjson.test.ts lib/labels.test.ts lib/meta/tagSchema.test.ts lib/wav.test.ts"
+    "test": "node --test lib/cutout.test.ts lib/filters.test.ts lib/photoPaths.test.ts lib/outfits.test.ts lib/meta/retry.test.ts lib/ndjson.test.ts lib/labels.test.ts lib/meta/tagSchema.test.ts lib/wav.test.ts lib/fallbackOutfits.test.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",

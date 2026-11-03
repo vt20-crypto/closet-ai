@@ -77,7 +77,9 @@ export async function POST(request: Request) {
 
     // One 40s retry budget shared by all nouns and tags in this scan:
     // retries ride out Meta 404 bursts without stalling the user.
-    const retryBudget = createRetryBudget(tAll + 40_000);
+    // Date.now-based: sleepWithinBudget compares against Date.now(), so a
+    // performance.now() value here would silently disable every retry.
+    const retryBudget = createRetryBudget(Date.now() + 40_000);
     const tSam = performance.now();
     const { detections: raw, allErrored, retried } = await segmentGarments(
       bytes, mime, iw, ih, undefined, undefined, retryBudget,

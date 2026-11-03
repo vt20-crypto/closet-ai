@@ -1,4 +1,6 @@
-import type { CSSProperties } from "react";
+"use client";
+
+import { useState, type CSSProperties } from "react";
 
 /** Deterministic tilt in -maxDeg..maxDeg from any string id. Stable across renders. */
 export function tiltForId(id: string, maxDeg: number): number {
@@ -49,16 +51,33 @@ interface TapeProps {
 
 /**
  * Butter-yellow tape label with dark Caveat ink. Slightly overlaps the tile
- * edge via the caller's negative margin. Short labels only.
+ * edge via the caller's negative margin. Long labels (e.g. "You said …")
+ * wrap within the screen width, clamp to 3 lines, and get a more/less toggle
+ * instead of ever causing horizontal scroll.
  */
 export function Tape({ label, seedId, className }: TapeProps) {
   const tilt = tiltForId(`tape:${seedId}`, 3);
+  const long = label.length > 60;
+  const [open, setOpen] = useState(false);
   return (
     <span
-      className={`tape font-hand inline-block rounded-xs px-3 py-1 text-xl leading-tight font-semibold whitespace-nowrap ${className ?? ""}`}
+      className={`tape font-hand inline-block max-w-full rounded-xs px-3 py-1 leading-tight font-semibold break-words ${
+        long ? "text-lg" : "text-xl"
+      } ${className ?? ""}`}
       style={{ rotate: `${tilt}deg` } as CSSProperties}
     >
-      {label}
+      <span className={long && !open ? "line-clamp-3" : undefined}>{label}</span>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-label={open ? "Show less of the quote" : "Show the full quote"}
+          className="font-sans min-h-11 px-2 text-base underline"
+        >
+          {open ? "less" : "more"}
+        </button>
+      )}
     </span>
   );
 }
