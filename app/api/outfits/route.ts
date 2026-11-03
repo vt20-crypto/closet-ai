@@ -96,6 +96,9 @@ export async function POST(request: Request) {
       }
     })();
     const [weather, dressCode] = await Promise.all([weatherPromise, dressPromise]);
+    const dressSearched = venue !== null;
+    const dressCitations = dressCode?.citations ?? 0;
+    const dressStatus = !dressSearched ? "skipped" : dressCode ? "searched" : "none";
 
     const weatherLine = weather
       ? `High ${weather.highC}°C, low ${weather.lowC}°C, ${weather.precipChancePct}% precipitation chance, wind ${weather.windKph} kph.`
@@ -107,7 +110,6 @@ export async function POST(request: Request) {
       formality: item.tags.formality,
       warmth: item.tags.warmth,
       layer: item.tags.layer,
-      pattern: item.tags.pattern,
     }));
 
     const baseInput = {
@@ -149,7 +151,8 @@ export async function POST(request: Request) {
 
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
-      `outfits weather_ms=${weatherMs} dress_ms=${dressMs} spark_ms=${sparkMs} total_ms=${totalMs} valid=${valid.length}`,
+      `outfits weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
+        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${valid.length}`,
     );
     return NextResponse.json({
       outfits: valid.map(({ item_ids, reason, weather_note, key }) => ({
@@ -160,7 +163,11 @@ export async function POST(request: Request) {
       })),
       items: itemCards,
       weather,
-      dressCode,
+      dressCode: {
+        note: dressCode?.note ?? null,
+        url: dressCode?.url ?? null,
+        searched: dressSearched,
+      },
       missing: [],
     });
   } catch (err) {

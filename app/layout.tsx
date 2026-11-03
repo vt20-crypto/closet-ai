@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import TabBar from "./tab-bar";
+
 export const metadata: Metadata = {
   title: "Closet AI",
   description: "Outfits from the clothes you already own.",
@@ -13,7 +15,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {/* Bottom padding clears the fixed tab bar + iPhone home indicator. */}
+        <div className="pb-28">{children}</div>
+        <TabBar />
+      </body>
     </html>
   );
 }

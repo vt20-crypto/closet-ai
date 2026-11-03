@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+const CITY_KEY = "closet-ai-city";
 
 const MOODS = ["calm", "confident", "cozy", "bold", "lazy"] as const;
 const OCCASIONS = ["work", "class", "date", "gym", "party", "errands"] as const;
@@ -28,8 +30,9 @@ interface WeatherView {
 }
 
 interface DressCodeView {
-  note: string;
+  note: string | null;
   url: string | null;
+  searched: boolean;
 }
 
 /** Server computes in °C; display °F for en-US, °C otherwise. */
@@ -69,6 +72,27 @@ export default function TodayPage() {
   const [status, setStatus] = useState("Pick a mood and an occasion to get dressed.");
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
+
+  // Remember the last city across visits (loaded after mount: no SSR value).
+  useEffect(() => {
+    void Promise.resolve().then(() => {
+      try {
+        const saved = window.localStorage.getItem(CITY_KEY);
+        if (saved) setCity(saved);
+      } catch {
+        // Private mode: city simply isn't remembered.
+      }
+    });
+  }, []);
+
+  function handleCityChange(value: string) {
+    setCity(value);
+    try {
+      window.localStorage.setItem(CITY_KEY, value);
+    } catch {
+      // Private mode: city simply isn't remembered.
+    }
+  }
 
   async function fetchOutfits(exclude: string[], label: string) {
     if (!mood || !occasion) {
@@ -139,18 +163,27 @@ export default function TodayPage() {
       return;
     }
     setLocating(true);
-    setStatus("Finding your location…");
+    setStatus("Locating…");
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        setCoords({ lat: position.coords.latitude, lon: position.coords.longitude });
-        setStatus("Location set. Now get your outfits.");
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        setCoords({ lat, lon });
+        setStatus(`Using your location (${lat.toFixed(2)}, ${lon.toFixed(2)}). Now get your outfits.`);
         setLocating(false);
       },
-      () => {
-        setStatus("Location unavailable — type a city instead.");
+      (error) => {
+        // 1 = permission denied, 2 = position unavailable, 3 = timeout.
+        if (error.code === 1) {
+          setStatus("Location is off for Safari. Type your city instead.");
+        } else if (error.code === 3) {
+          setStatus("Location timed out. Type your city instead.");
+        } else {
+          setStatus("Location unavailable. Type your city instead.");
+        }
         setLocating(false);
       },
-      { timeout: 10_000 },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
     );
   }
 
@@ -239,7 +272,7 @@ export default function TodayPage() {
             <input
               type="text"
               value={city}
-              onChange={(event) => setCity(event.target.value)}
+              onChange={(event) => handleCityChange(event.target.value)}
               placeholder="e.g. Lisbon"
               maxLength={120}
               className="min-h-14 rounded-2xl border border-neutral-400 bg-transparent px-4"
@@ -288,21 +321,25 @@ export default function TodayPage() {
         </section>
       )}
 
-      {dressCode && (
-        <p className="text-lg">
-          Dress code: {dressCode.note}{" "}
-          {dressCode.url && (
-            <a
-              href={dressCode.url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              Source
-            </a>
-          )}
-        </p>
-      )}
+      {dressCode?.searched ? (
+        dressCode.note ? (
+          <p className="text-lg">
+            Dress code (searched): {dressCode.note}{" "}
+            {dressCode.url && (
+              <a
+                href={dressCode.url}
+                target="_blank"
+                rel="noreferrer"
+                className="underline"
+              >
+                Source
+              </a>
+            )}
+          </p>
+        ) : (
+          <p className="text-lg">No dress code found online.</p>
+        )
+      ) : null}
 
       {outfits.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-6">

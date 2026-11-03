@@ -104,6 +104,8 @@ function rejected(reason: string): GarmentTags {
 export interface DressCodeNote {
   note: string;
   url: string | null;
+  /** How many url_citation annotations the search response carried. */
+  citations: number;
 }
 
 /**
@@ -128,14 +130,16 @@ export async function fetchDressCode(venue: string): Promise<DressCodeNote | nul
     );
     const note = (res.output_text ?? "").trim();
     if (!note) return null;
-    return { note, url: firstCitationUrl(res.output) };
+    const urls = citationUrls(res.output);
+    return { note, url: urls[0] ?? null, citations: urls.length };
   } catch {
     return null;
   }
 }
 
-function firstCitationUrl(output: unknown): string | null {
-  if (!Array.isArray(output)) return null;
+function citationUrls(output: unknown): string[] {
+  const urls: string[] = [];
+  if (!Array.isArray(output)) return urls;
   for (const item of output) {
     const content = (item as { content?: unknown }).content;
     if (!Array.isArray(content)) continue;
@@ -149,12 +153,12 @@ function firstCitationUrl(output: unknown): string | null {
           typeof cited.url === "string" &&
           cited.url.startsWith("http")
         ) {
-          return cited.url;
+          urls.push(cited.url);
         }
       }
     }
   }
-  return null;
+  return urls;
 }
 
 export interface ClosetLine {
@@ -164,7 +168,6 @@ export interface ClosetLine {
   formality: number;
   warmth: number;
   layer: string;
-  pattern: string;
 }
 
 export interface PickOutfitsInput {
@@ -209,11 +212,11 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   const lines = input.closet
     .map(
       (c) =>
-        `${c.id} | ${c.type} | ${c.primary_color} | formality ${c.formality}/5 | warmth ${c.warmth}/5 | ${c.layer} | ${c.pattern}`,
+        `${c.id} | ${c.type} | ${c.primary_color} | formality ${c.formality}/5 | warmth ${c.warmth}/5 | ${c.layer}`,
     )
     .join("\n");
   const parts = [
-    `Pick 1 to 3 outfits from this closet (never pad with filler; fewer good outfits beat three bad ones). Use ONLY these item ids, exactly as written:`,
+    `Pick at most 3 outfits from this closet (never pad with filler; fewer good outfits beat three bad ones). Use ONLY these item ids, exactly as written:`,
     lines,
     input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
     `Mood: ${input.mood}. Occasion: ${input.occasion}.`,
@@ -232,12 +235,14 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
     `Each outfit must be complete: top+bottom or a dress, plus shoes if the closet has any. ` +
       `Never use the same garment type twice except layered pieces. ` +
       `weather_note is one line of clothing advice for the weather WITHOUT temperature numbers (numbers render separately). ` +
-      `reason is one or two sentences tying the outfit to the mood and occasion.`,
+      `reason is 20 words or fewer tying the outfit to the mood and occasion.`,
   );
+  // "minimal" is the shortest documented reasoning pass
+  // (dev.meta.ai/docs/reasoning). The pick is latency-critical.
   const res = await withTransient404Retry("spark outfits", () =>
     api.responses.create({
       model: MODEL,
-      reasoning: { effort: "low" },
+      reasoning: { effort: "minimal" },
       input: parts.join("\n"),
       text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
     }),
