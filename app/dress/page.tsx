@@ -732,7 +732,7 @@ export default function DressPage() {
                   if (!item) return null;
                   return (
                     <li key={id} className="flex flex-col items-center gap-1">
-                      <span className="flex aspect-[3/4] w-full items-center justify-center">
+                      <span className="flex aspect-[3/4] w-full items-center justify-center rounded-xl bg-(--paper) p-2">
                         <Sticker src={item.cutoutUrl} alt={item.nickname} seedId={id} />
                       </span>
                       <span className="text-[13px] text-(--text-muted)">{item.nickname}</span>

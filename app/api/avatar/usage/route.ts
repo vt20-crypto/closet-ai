@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getBlobStore } from "@/lib/cache";
-import { AVATAR_GENERATIONS_PER_WEEK, checkAvatarAllowance } from "@/lib/limits";
+import { avatarWeeklyLimit, checkAvatarAllowance } from "@/lib/limits";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export async function GET() {
   const allowance = await checkAvatarAllowance(getBlobStore(), Date.now());
   return NextResponse.json({
     remaining: allowance.remaining,
-    total: AVATAR_GENERATIONS_PER_WEEK,
+    total: avatarWeeklyLimit(),
     resetAt: allowance.resetAt,
   });
 }

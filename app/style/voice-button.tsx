@@ -189,7 +189,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
   }
 
   return (
-    <span className="relative inline-flex self-start">
+    <span className="relative flex w-full">
       <span
         ref={ringRef}
         aria-hidden="true"
@@ -200,8 +200,8 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
         onClick={() => void toggle()}
         disabled={disabled && phase === "idle"}
         aria-pressed={phase === "listening"}
-        aria-label={phase === "listening" ? "Stop listening" : "Talk to plan your outfit"}
-        className={`relative flex min-h-16 items-center justify-center gap-3 rounded-full bg-(--primary) px-6 text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) ${
+        aria-label={phase === "listening" ? "Stop listening" : "Tell me about your day"}
+        className={`relative flex min-h-16 w-full items-center justify-center gap-3 rounded-full bg-(--primary) px-6 text-xl font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) ${
           phase === "listening" ? "animate-mic-pulse" : ""
         }`}
       >
@@ -209,7 +209,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
           <rect x="9" y="3" width="6" height="11" rx="3" />
           <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
         </svg>
-        {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : "Tap to talk"}
+        {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : "Tell me about your day"}
       </button>
     </span>
   );

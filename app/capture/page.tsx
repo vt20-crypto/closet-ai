@@ -11,21 +11,7 @@ import { tapeLabel } from "@/lib/labels";
 import { createNDJSONParser } from "@/lib/ndjson";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 
-const MAX_FILES = 20;
 const MAX_DIM = 1600;
-
-/** One photo in the bulk add queue. */
-interface QueueItem {
-  id: string;
-  file: Blob;
-  name: string;
-  thumbUrl: string;
-  status: "queued" | "uploading" | "ready" | "scanning" | "done" | "failed";
-  photo?: Photo;
-  error?: string;
-  /** Pieces found by the scan (set on Done). */
-  pieces?: number;
-}
 
 interface Photo {
   url: string;
@@ -107,7 +93,7 @@ const TAG_TIMEOUT_MS = 20_000;
 
 interface CropTarget {
   displayUrl: string;
-  source: { kind: "file"; file: File } | { kind: "photo"; photo: Photo } | { kind: "queue"; id: string };
+  source: { kind: "file"; file: File } | { kind: "photo"; photo: Photo };
 }
 
 function candidateTitle(candidate: Candidate): string {
@@ -222,10 +208,6 @@ export default function CapturePage() {
   const takeRef = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("No photos yet. Add clothes to start your closet.");
-  /** Bulk add queue: resize + upload, then scan one photo at a time. */
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const queueRef = useRef<QueueItem[]>([]);
-  queueRef.current = queue;
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [meta, setMeta] = useState<Record<string, PhotoMeta>>({});
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -270,6 +252,8 @@ export default function CapturePage() {
   const tagTimers = useRef(new Map<string, number>());
   const [photoPrompt, setPhotoPrompt] = useState<PhotoPrompt | null>(null);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
+  /** Retry for a failed single-photo upload (file stays in memory). */
+  const [uploadRetry, setUploadRetry] = useState<null | (() => void)>(null);
   /** Post-review summary, shown once a review round fully drains. */
   const [doneCard, setDoneCard] = useState<{ added: number } | null>(null);
   /** Items kept since the last drain; the done card reports this count. */
@@ -331,11 +315,9 @@ export default function CapturePage() {
     label: string,
     parentOverride?: string,
     isRetry = false,
-    quiet = false,
   ): Promise<number> {
-    // Queue scans stay quiet: the queue progress line is the status.
     const say = (message: string): void => {
-      if (!quiet) setStatus(message);
+      setStatus(message);
     };
     say(`Finding clothes in ${label}…`);
     setRetryAction(null);
@@ -430,7 +412,7 @@ export default function CapturePage() {
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
         say(META_HICCUP_MESSAGE);
         await new Promise((resolve) => setTimeout(resolve, 10_000));
-        return scanPhoto(photo, label, parentOverride, true, quiet);
+        return scanPhoto(photo, label, parentOverride, true);
       }
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
         say("Your stylist is still taking a breather.");
@@ -478,15 +460,8 @@ export default function CapturePage() {
   async function finishCrop(cropped: Blob | null) {
     const target = cropTarget;
     setCropTarget(null);
-    // Queue thumbs stay alive for the queue list; other URLs are one-shot.
-    if (target && target.source.kind !== "queue") URL.revokeObjectURL(target.displayUrl);
+    if (target) URL.revokeObjectURL(target.displayUrl);
     if (!target) return;
-    if (target.source.kind === "queue") {
-      // Crop only swaps the file; the upload turn picks it up. Never blocks.
-      if (cropped) setQueueItem(target.source.id, { file: cropped });
-      else setStatus("Crop skipped.");
-      return;
-    }
     if (target.source.kind === "file") {
       setBusy(true);
       try {
@@ -536,10 +511,6 @@ export default function CapturePage() {
     }
   }
 
-  function setQueueItem(id: string, patch: Partial<QueueItem>) {
-    setQueue((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
-  }
-
   /** Rear camera: one photo, with the optional crop step before upload. */
   async function handleTakeFile(file: File | undefined) {
     if (!file || busy || cropTarget) return;
@@ -548,143 +519,35 @@ export default function CapturePage() {
     if (takeRef.current) takeRef.current.value = "";
   }
 
-  /** Upload picker: up to 20 photos into the queue, then upload + scan. */
-  async function handleUploadFiles(files: FileList | null) {
-    if (!files || files.length === 0 || busy) return;
+  /** One photo at a time: resize → upload → scan, with one status line. */
+  async function handleUploadFile(file: File | undefined) {
+    if (!file || busy) return;
     if (cropTarget) {
-      setStatus("Finish the crop first (Use crop or Skip), then add photos.");
+      setStatus("Finish the crop first (Use crop or Skip), then add a photo.");
       return;
     }
-    const batch = Array.from(files).slice(0, MAX_FILES);
-    if (files.length > MAX_FILES) {
-      setStatus(`Taking the first ${MAX_FILES} of ${files.length} photos.`);
-    }
+    setUploadRetry(null);
     if (uploadRef.current) uploadRef.current.value = "";
-    const items: QueueItem[] = batch.map((file, index) => ({
-      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-      name: file.name || `Photo ${index + 1}`,
-      thumbUrl: URL.createObjectURL(file),
-      status: "queued",
-    }));
-    // The queue renders before any decode or upload runs; batches append so a
-    // second pick never drops the first.
-    setQueue((prev) => [...prev, ...items]);
     setBusy(true);
     try {
-      // Uploads run in order; a queued photo can still be cropped meanwhile.
-      // queueRef updates async, so fall back to the item itself (same tick).
-      for (const item of items) {
-        const current = queueRef.current.find((entry) => entry.id === item.id) ?? item;
-        if (current.status !== "queued") continue;
-        setQueueItem(item.id, { status: "uploading", error: undefined });
-        try {
-          const jpeg = await resizeToJpeg(current.file).catch(() => {
-            throw new Error(decodeError(current.file));
-          });
-          const photo = await uploadSingle(jpeg, current.name, true);
-          if (!photo) throw new Error("Upload failed. Tap Retry.");
-          setQueueItem(item.id, { status: "ready", photo });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Upload failed.";
-          setQueueItem(item.id, { status: "failed", error: message });
-        }
-      }
-      await refresh();
-      // Scans run two at a time; every found piece lands in one review list.
-      const ready = queueRef.current.filter((entry) => entry.status === "ready");
-      let cursor = 0;
-      const scanNext = async (): Promise<void> => {
-        for (;;) {
-          const index = cursor++;
-          if (index >= ready.length) return;
-          const entry = ready[index];
-          if (!entry?.photo) continue;
-          setQueueItem(entry.id, { status: "scanning", error: undefined });
-          const found = await scanPhoto(entry.photo, `photo ${index + 1} of ${ready.length}`, undefined, false, true);
-          const latest = await refresh();
-          const pieces = latest?.meta?.[entry.photo.pathname]?.candidateIds?.length ?? found;
-          const done = !!latest?.meta?.[entry.photo.pathname];
-          setQueueItem(
-            entry.id,
-            done
-              ? { status: "done", pieces }
-              : { status: "failed", error: "Scan failed." },
-          );
-        }
-      };
-      await Promise.all([scanNext(), scanNext()]);
-      setStatus("Queue finished. Tap Keep to add pieces to your closet.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /** Clear the finished queue and release every thumbnail URL. */
-  function clearQueue() {
-    for (const entry of queueRef.current) {
+      setStatus("Uploading…");
+      let jpeg: Blob;
       try {
-        URL.revokeObjectURL(entry.thumbUrl);
+        jpeg = await resizeToJpeg(file);
       } catch {
-        // Already released.
+        throw new Error(decodeError(file));
       }
-    }
-    setQueue([]);
-  }
-
-  // Release thumbnails if the page unmounts mid-queue.
-  useEffect(() => {
-    const ref = queueRef;
-    return () => {
-      for (const entry of ref.current) {
-        try {
-          URL.revokeObjectURL(entry.thumbUrl);
-        } catch {
-          // Already released.
-        }
-      }
-    };
-  }, []);
-
-  /** Retry one failed queue photo (upload first when it never uploaded). */
-  async function retryQueueItem(id: string) {
-    const entry = queueRef.current.find((item) => item.id === id);
-    if (!entry || busy || entry.status === "uploading" || entry.status === "scanning") return;
-    setBusy(true);
-    try {
-      let photo: Photo | undefined = entry.photo;
-      if (!photo) {
-        setQueueItem(id, { status: "uploading", error: undefined });
-        const jpeg = await resizeToJpeg(entry.file).catch(() => {
-          throw new Error(decodeError(entry.file));
-        });
-        const uploaded = await uploadSingle(jpeg, entry.name, true);
-        if (!uploaded) throw new Error("Upload failed. Tap Retry.");
-        photo = uploaded;
-        setQueueItem(id, { status: "ready", photo });
-        await refresh();
-      }
-      setQueueItem(id, { status: "scanning", error: undefined });
-      await scanPhoto(photo, entry.name, undefined, false, true);
-      const latest = await refresh();
-      const done = !!latest?.meta?.[photo.pathname];
-      setQueueItem(id, done ? { status: "done" } : { status: "failed", error: "Scan failed." });
-      setStatus(done ? "Scan finished. Tap Keep to add pieces to your closet." : "Scan failed again.");
+      const photo = await uploadSingle(jpeg, file.name || "Photo");
+      if (!photo) throw new Error("Upload failed.");
+      await refresh();
+      await scanPhoto(photo, "your photo");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed.";
-      setQueueItem(id, { status: "failed", error: message });
-      setStatus(`Retry failed: ${message}`);
+      setStatus(message);
+      setUploadRetry(() => () => void handleUploadFile(file));
     } finally {
       setBusy(false);
     }
-  }
-
-  /** Crop one queued photo (before its upload turn); never blocks the queue. */
-  function openQueueCrop(id: string) {
-    const entry = queueRef.current.find((item) => item.id === id);
-    if (!entry || entry.status !== "queued") return;
-    setCropTarget({ displayUrl: entry.thumbUrl, source: { kind: "queue", id } });
-    setStatus("Drag to crop around the garment, then Use crop — or Skip.");
   }
 
   async function scanAll() {
@@ -897,12 +760,11 @@ export default function CapturePage() {
       />
       <input
         ref={uploadRef}
-        id="upload-photos-input"
+        id="upload-photo-input"
         type="file"
         accept="image/*"
-        multiple
         className="sr-only"
-        onChange={(event) => void handleUploadFiles(event.target.files)}
+        onChange={(event) => void handleUploadFile(event.target.files?.[0])}
       />
       <div className="flex flex-col gap-3 min-[480px]:flex-row">
         <button
@@ -919,7 +781,7 @@ export default function CapturePage() {
           onClick={() => uploadRef.current?.click()}
           className="min-h-16 flex-1 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
         >
-          Upload photos
+          Upload a photo
         </button>
       </div>
       <p role="status" aria-live="polite" className="text-lg">
@@ -938,77 +800,20 @@ export default function CapturePage() {
           Try again
         </button>
       )}
-      {queue.length > 0 && (
-        <section aria-label="Photo queue" className="flex flex-col gap-3">
-          <h2 className="font-display text-2xl">Adding photos</h2>
-          <p role="status" className="text-lg">
-            {queue.some((entry) => entry.status === "uploading")
-              ? `Uploading ${queue.filter((entry) => ["ready", "scanning", "done", "failed"].includes(entry.status)).length + 1} of ${queue.length}…`
-              : queue.some((entry) => entry.status === "scanning" || entry.status === "ready")
-                ? `Scanning ${queue.filter((entry) => entry.status === "done" || entry.status === "failed").length + 1} of ${queue.length}…`
-                : `Added ${queue.filter((entry) => entry.status === "done").length} of ${queue.length} photos.`}
-          </p>
-          <ul className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {queue.map((entry) => (
-              <li
-                key={entry.id}
-                className="flex flex-col gap-2 rounded-2xl border border-(--border-soft) bg-(--surface-2) p-3"
-              >
-                <img
-                  src={entry.thumbUrl}
-                  alt={entry.name}
-                  loading="lazy"
-                  className="aspect-square w-full rounded-xl object-cover"
-                />
-                <p className="min-h-6 text-base text-(--text-muted)" aria-live="polite">
-                  {entry.status === "failed"
-                    ? (entry.error ?? "Failed.")
-                    : entry.status === "queued"
-                      ? "Waiting…"
-                      : entry.status === "uploading"
-                        ? "Uploading…"
-                        : entry.status === "ready"
-                          ? "Uploaded."
-                          : entry.status === "scanning"
-                            ? "Scanning…"
-                            : entry.pieces !== undefined
-                              ? `Done (${entry.pieces} piece${entry.pieces === 1 ? "" : "s"} found).`
-                              : "Done."}
-                </p>
-                {entry.status === "queued" && (
-                  <button
-                    type="button"
-                    onClick={() => openQueueCrop(entry.id)}
-                    aria-label={`Crop ${entry.name}`}
-                    className="min-h-11 rounded-full border border-(--border) text-base font-semibold"
-                  >
-                    Crop
-                  </button>
-                )}
-                {entry.status === "failed" && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void retryQueueItem(entry.id)}
-                    aria-label={`Retry ${entry.name}`}
-                    className="min-h-11 rounded-full border border-(--border) text-base font-semibold disabled:text-(--disabled-text)"
-                  >
-                    Retry
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-          {queue.every((entry) => entry.status === "done" || entry.status === "failed") && (
-            <button
-              type="button"
-              onClick={clearQueue}
-              className="min-h-11 self-start rounded-full border border-(--border) px-6 text-base font-semibold"
-            >
-              Clear list
-            </button>
-          )}
-        </section>
+      {uploadRetry && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            const rerun = uploadRetry;
+            setUploadRetry(null);
+            rerun();
+          }}
+          aria-label="Retry photo upload"
+          className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+        >
+          Retry
+        </button>
       )}
       {cropTarget && (
         <CropEditor
@@ -1066,6 +871,14 @@ export default function CapturePage() {
               </ul>
             </details>
           )}
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => uploadRef.current?.click()}
+            className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+          >
+            Add another photo
+          </button>
         </section>
       )}
       {listsVisible && photoPrompt && photoPrompt.remaining === 0 && (

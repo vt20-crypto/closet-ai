@@ -7,7 +7,7 @@ import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import { slotRank } from "@/lib/outfits";
 import { buildSavedLook, type InventedItem } from "@/lib/render";
-import { normalizeTimeOfDay, resolveDateText, todayISO, tomorrowISO } from "@/lib/when";
+import { normalizeTimeOfDay, resolveDateText, tomorrowISO } from "@/lib/when";
 import {
   applyMoreIdeas,
   createPager,
@@ -18,8 +18,12 @@ import {
   type OutfitPagerState,
 } from "@/lib/outfitPager";
 import { speak, unlockSpeech } from "@/lib/speak";
+import { stageStep } from "@/lib/stageNav";
 
+import ItemEditor, { type EditableItem } from "../item-editor";
 import { Sticker, Tape } from "../sticker";
+import Stage from "./stage";
+import StyleSheet from "./style-sheet";
 import VoiceButton, { type VoiceSlots } from "./voice-button";
 
 const CITY_KEY = "closet-ai-city";
@@ -44,6 +48,8 @@ interface SavedSession {
   weather: WeatherView | null;
   dressCode: DressCodeView | null;
   relaxed: boolean;
+  avatar?: { url: string; version: string } | null;
+  renders?: Record<string, StageRecord>;
 }
 
 function isSavedSession(value: unknown): value is SavedSession {
@@ -62,11 +68,32 @@ function isSavedSession(value: unknown): value is SavedSession {
       return false;
     }
   }
-  return typeof s.inputs === "object" && s.inputs !== null;
+  if (typeof s.inputs !== "object" || s.inputs === null) return false;
+  const maybeAvatar = s.avatar;
+  if (maybeAvatar !== undefined && maybeAvatar !== null) {
+    if (
+      typeof maybeAvatar !== "object" ||
+      typeof (maybeAvatar as { url?: unknown }).url !== "string" ||
+      typeof (maybeAvatar as { version?: unknown }).version !== "string"
+    ) {
+      return false;
+    }
+  }
+  const maybeRenders = (s as { renders?: unknown }).renders;
+  if (maybeRenders !== undefined) {
+    if (typeof maybeRenders !== "object" || maybeRenders === null) return false;
+    for (const record of Object.values(maybeRenders as Record<string, unknown>)) {
+      if (typeof record !== "object" || record === null) return false;
+      const url = (record as { url?: unknown }).url;
+      if (url !== null && url !== undefined && typeof url !== "string") return false;
+    }
+  }
+  return true;
 }
 
 const MOODS = ["calm", "confident", "cozy", "bold", "lazy"] as const;
-const OCCASIONS = ["work", "class", "date", "gym", "party", "errands", "brunch", "dinner"] as const;
+/** Sheet chips: errands/class map to Casual; gym stays reachable by voice/text. */
+const OCCASIONS = ["work", "date night", "dinner", "brunch", "party", "casual"] as const;
 const TIMES = ["morning", "afternoon", "evening"] as const;
 
 interface OutfitView {
@@ -140,6 +167,142 @@ type StageRecord = {
   /** Image service was down: flat-lay stands in, one quiet retry pending. */
   outage?: boolean;
 };
+
+/** Full closet record for the garment detail dialog (fetched on tap). */
+interface ClosetDetailItem {
+  id: string;
+  cutoutUrl: string;
+  tags: {
+    nickname?: string;
+    type: string;
+    primary_color: string;
+    secondary_colors?: string[];
+    formality: number;
+    warmth: number;
+    layer?: string;
+    fabric_weight?: string;
+    pattern?: string;
+    seasons?: string[];
+    distinguishing_note?: string;
+    fit?: string;
+    length?: string;
+    sleeve?: string;
+    rise?: string;
+  };
+}
+
+/** Tap-a-garment detail: full tags + Edit, in a native bottom sheet. */
+function GarmentDetailDialog({
+  title,
+  loading,
+  item,
+  onEdit,
+  onClose,
+}: {
+  title: string;
+  loading: boolean;
+  item: ClosetDetailItem | null;
+  onEdit: () => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="garment-detail-title"
+      onClose={onClose}
+      onClick={(event) => {
+        if (event.target === dialogRef.current) dialogRef.current?.close();
+      }}
+      className="fixed inset-x-0 bottom-0 m-0 mx-auto max-h-[90dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-[20px] border border-(--border-soft) bg-(--surface) p-6 text-(--text) backdrop:bg-black/50"
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-3">
+          <h2 id="garment-detail-title" className="min-w-0 flex-1 font-display text-2xl capitalize">
+            {title}
+          </h2>
+          <button
+            type="button"
+            onClick={() => dialogRef.current?.close()}
+            className="min-h-11 shrink-0 rounded-full border border-(--border) px-5 text-base font-semibold"
+          >
+            Close
+          </button>
+        </div>
+        {loading ? (
+          <p className="text-lg">Loading…</p>
+        ) : !item ? (
+          <p className="text-lg">Couldn&apos;t load that piece.</p>
+        ) : (
+          <>
+            <span className="flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--paper) p-3">
+              <Sticker
+                src={item.cutoutUrl}
+                alt={title}
+                seedId={item.id}
+                rich
+              />
+            </span>
+            <dl className="flex flex-col gap-1 text-lg">
+              <div className="flex gap-2">
+                <dt className="font-semibold">Colors:</dt>
+                <dd className="capitalize">
+                  {[item.tags.primary_color, ...(item.tags.secondary_colors ?? [])].join(", ")}
+                </dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="font-semibold">Formality:</dt>
+                <dd>{item.tags.formality} of 5</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="font-semibold">Warmth:</dt>
+                <dd>{item.tags.warmth} of 5</dd>
+              </div>
+              {item.tags.distinguishing_note && (
+                <div className="flex gap-2">
+                  <dt className="font-semibold">Note:</dt>
+                  <dd>{item.tags.distinguishing_note}</dd>
+                </div>
+              )}
+            </dl>
+            <button
+              type="button"
+              onClick={onEdit}
+              aria-label={`Edit ${title}`}
+              className="min-h-14 w-full rounded-full border border-(--border) px-6 text-lg font-semibold"
+            >
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+    </dialog>
+  );
+}
+
+function toGarmentEditable(item: ClosetDetailItem): EditableItem {
+  return {
+    id: item.id,
+    label: `${item.tags.primary_color} ${item.tags.type}`,
+    cutoutUrl: item.cutoutUrl,
+    tags: {
+      nickname: item.tags.nickname ?? "",
+      type: item.tags.type,
+      primary_color: item.tags.primary_color,
+      fit: item.tags.fit ?? "n/a",
+      length: item.tags.length ?? "n/a",
+      sleeve: item.tags.sleeve ?? "n/a",
+      rise: item.tags.rise ?? "n/a",
+      formality: item.tags.formality,
+      warmth: item.tags.warmth,
+    },
+  };
+}
 
 /** Store one record, dropping entries from older avatar versions. */
 function storeRender(
@@ -238,7 +401,8 @@ export default function TodayPage() {
   }
   const [voiceRequested, setVoiceRequested] = useState(false);
 
-  // Stage: avatar spotlight for the selected look.
+  // Stage: avatar spotlight for the selected look. Persisted for the session
+  // so revisits paint instantly; the pointer fetch still refreshes it.
   const [avatar, setAvatar] = useState<{ url: string; version: string } | null | undefined>(undefined);
   // Storage outage: suppress the "Create your avatar" CTA (never on read error).
   const [avatarDown, setAvatarDown] = useState(false);
@@ -272,7 +436,14 @@ export default function TodayPage() {
   }, []);
   const inflightRef = useRef<Set<string>>(new Set());
   const verifyInflightRef = useRef<Set<string>>(new Set());
-  const touchX = useRef<number | null>(null);
+  /** "Or choose" bottom sheet. */
+  const [sheetOpen, setSheetOpen] = useState(false);
+  /** Garment detail dialog: item id, loaded record, loading flag. */
+  const [garmentId, setGarmentId] = useState<string | null>(null);
+  const [garmentItem, setGarmentItem] = useState<ClosetDetailItem | null>(null);
+  const [garmentLoading, setGarmentLoading] = useState(false);
+  const [garmentEditing, setGarmentEditing] = useState(false);
+  const closetCache = useRef<Record<string, ClosetDetailItem> | null>(null);
 
   function resetStage() {
     setStageIndex(0);
@@ -344,18 +515,30 @@ export default function TodayPage() {
         .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
         .sort((a, b) => slotRank(a.card.slot) - slotRank(b.card.slot))
     : [];
-  const stagedRender = staged && avatar ? renders[renderKey(staged.key)] : undefined;
-  const whenBits = [
-    whenDate === null ? "Today" : whenDate === tomorrowISO() ? "Tomorrow" : whenDate,
-    timeOfDay,
-    destination.trim() || weather?.placeName?.trim() || null,
-  ].filter((bit): bit is string => Boolean(bit));
+
+  /** Day · temp · place pill up top; opens the sheet for day/place edits. */
+  const pillDay = whenDate === null ? "Today" : whenDate === tomorrowISO() ? "Tomorrow" : whenDate;
+  const pillPlace = destination.trim() || city.trim() || weather?.placeName?.trim() || "anywhere";
+  const pillLabel = weather
+    ? `${pillDay} · ${formatTemp(weather.highC)} · ${pillPlace}`
+    : `${pillDay} · ${pillPlace}`;
 
   function goStage(delta: number) {
     if (page.length === 0) return;
-    setStageIndex((index) => (index + delta + page.length) % page.length);
+    // Swipe and arrows share one helper so they can never disagree.
+    setStageIndex((index) => stageStep(index, delta, page.length));
     setShowItems(false);
     setSaveNote(null);
+  }
+
+  /** Back to the base outfit: clears looks but keeps every input. */
+  function startOver() {
+    setPager(null);
+    resetStage();
+    setShowItems(false);
+    setSaveNote(null);
+    setMissing([]);
+    setStatus("Pick a mood and an occasion to get dressed.");
   }
 
   // Remember the last city across visits (loaded after mount: no SSR value).
@@ -440,7 +623,13 @@ export default function TodayPage() {
         setWeather(saved.weather ?? null);
         setDressCode(saved.dressCode ?? null);
         setRelaxed(saved.relaxed === true);
+        if (saved.avatar !== undefined) setAvatar(saved.avatar);
+        if (saved.renders) setRenders(saved.renders);
         setStatus("Restored your last looks.");
+      } else if (saved.avatar !== undefined) {
+        setAvatar(saved.avatar);
+      } else if (saved.renders) {
+        setRenders(saved.renders);
       }
     } catch {
       // Corrupt session: start fresh.
@@ -449,6 +638,7 @@ export default function TodayPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Persist inputs + results for the session (Save, and back-nav from /dress).
+  // Avatar + renders ride along so revisits paint instantly.
   useEffect(() => {
     try {
       const saved: SavedSession = {
@@ -459,12 +649,14 @@ export default function TodayPage() {
         weather,
         dressCode,
         relaxed,
+        avatar: avatar === undefined ? undefined : avatar,
+        renders,
       };
       window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(saved));
     } catch {
       // Private mode: the session simply isn't restored.
     }
-  }, [mood, occasion, occasionText, destination, city, whenDate, timeOfDay, voiceRequested, pager, itemCards, weather, dressCode, relaxed]);
+  }, [mood, occasion, occasionText, destination, city, whenDate, timeOfDay, voiceRequested, pager, itemCards, weather, dressCode, relaxed, avatar, renders]);
 
   // Load the avatar pointer once (no-store: a redo replaces it).
   useEffect(() => {
@@ -491,6 +683,13 @@ export default function TodayPage() {
       cancelled = true;
     };
   }, []);
+
+  // Preload the base avatar so the stage paints instantly on every visit.
+  useEffect(() => {
+    if (!avatar?.url) return;
+    const img = new Image();
+    img.src = avatar.url;
+  }, [avatar?.url]);
 
   // First image for one look: returns the stored record, "no-avatar" when the
   // avatar is gone, or null when there is nothing to store (cached, in
@@ -686,6 +885,73 @@ export default function TodayPage() {
       // Private mode: the note below still confirms the tap.
     }
     setSaveNote("Lookbook is coming soon — this look is set aside for it.");
+  }
+
+  /** Open the garment detail dialog; closet records are fetched once and cached. */
+  async function openGarment(id: string) {
+    setGarmentId(id);
+    setGarmentEditing(false);
+    const cached = closetCache.current?.[id];
+    if (cached) {
+      setGarmentItem(cached);
+      return;
+    }
+    setGarmentItem(null);
+    setGarmentLoading(true);
+    try {
+      const res = await fetch("/api/closet", { cache: "no-store" });
+      const body = (await res.json()) as { items?: ClosetDetailItem[] };
+      if (res.ok && Array.isArray(body.items)) {
+        const next: Record<string, ClosetDetailItem> = {};
+        for (const item of body.items) next[item.id] = item;
+        closetCache.current = next;
+        setGarmentItem(next[id] ?? null);
+      } else {
+        setGarmentItem(null);
+      }
+    } catch {
+      setGarmentItem(null);
+    } finally {
+      setGarmentLoading(false);
+    }
+  }
+
+  /** Fresh pick with the current inputs, then read the first look aloud. */
+  function runFresh() {
+    void fetchOutfits([], "Getting your outfits…").then((run) => {
+      if (run && run.outfits.length > 0) {
+        speakOutfit(run.outfits[0], run.outfits.length, run.items, run.weather, run.dressCode);
+      }
+    });
+  }
+
+  /** Persist an edit-sheet draft; refreshes the look's nickname tape. */
+  async function saveGarmentEdit(id: string, draft: Record<string, unknown>) {
+    const res = await fetch(`/api/closet/items/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    const body = (await res.json()) as { item?: ClosetDetailItem; error?: string };
+    const updated = body.item;
+    if (!res.ok || !updated) throw new Error(body.error ?? `HTTP ${res.status}`);
+    closetCache.current = { ...(closetCache.current ?? {}), [id]: updated };
+    setGarmentItem(updated);
+    setItemCards((prev) => {
+      const card = prev[id];
+      if (!card) return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...card,
+          type: updated.tags.type,
+          primary_color: updated.tags.primary_color,
+          nickname: updated.tags.nickname,
+        },
+      };
+    });
+    setGarmentEditing(false);
+    setStatus("Saved.");
   }
 
   function handleCityChange(value: string) {
@@ -1022,150 +1288,97 @@ export default function TodayPage() {
     ),
   ].slice(0, 50);
 
-  const chipClass = (selected: boolean) =>
-    `min-h-12 rounded-full border px-5 text-lg capitalize disabled:text-(--disabled-text) ${
-      selected
-        ? "border-(--primary) bg-(--primary) font-semibold text-(--primary-text)"
-        : "border-(--border)"
-    }`;
+  // Stage wiring: one spotlight look at a time; the base avatar is always
+  // underneath so swiping back (or to a still-rendering look) never blanks.
+  const hasResults = page.length > 0;
+  const stagedIndex = staged ? Math.min(stageIndex, page.length - 1) : 0;
+  const stagedRecord: StageRecord | undefined =
+    staged && avatar ? renders[renderKey(staged.key)] : undefined;
+  const stagedRendering = Boolean(staged && avatar && !stagedRecord);
+  const stagedFlatLay = Boolean(staged && stagedRecord && !stagedRecord.url);
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6 md:max-w-[960px]">
-      <h1 className="font-display text-4xl">Style</h1>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6 pb-[calc(7rem+env(safe-area-inset-bottom))] md:max-w-[960px] md:pb-6">
+      <h1 className="sr-only">Style</h1>
 
-      <section aria-label="Mood" className="flex flex-col gap-3">
-        <h2 className="text-xl font-semibold">Mood</h2>
-        <div className="flex flex-wrap gap-3">
-          {MOODS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              disabled={busy}
-              aria-pressed={mood === m}
-              onClick={() => setMood(mood === m ? "" : m)}
-              className={chipClass(mood === m)}
+      <div className="flex justify-center">
+        <button
+          type="button"
+          onClick={() => setSheetOpen(true)}
+          aria-label={`Day and place: ${pillLabel}. Change day or place.`}
+          className="min-h-11 rounded-full border border-(--border) bg-(--surface) px-5 text-lg font-semibold"
+        >
+          <Tape label={pillLabel} seedId="day-place" />
+        </button>
+      </div>
+
+      <Stage
+        avatarUrl={avatar?.url ?? null}
+        dressedUrl={stagedRecord?.url && !showItems ? (stagedRecord.url ?? null) : null}
+        rendering={stagedRendering && !showItems}
+        flatLay={
+          staged && (showItems || stagedFlatLay) ? (
+            <div className="absolute inset-0 overflow-y-auto bg-(--surface) p-4">
+              <ul className="grid grid-cols-2 gap-3" aria-label="Look garments, laid flat">
+                {stagedCards.map(({ id, card }) => (
+                  <li
+                    key={id}
+                    className="flex aspect-[3/4] items-center justify-center rounded-xl bg-(--paper) p-2"
+                  >
+                    <Sticker
+                      src={card.cutoutUrl}
+                      alt={`${card.type} in ${card.primary_color}`}
+                      seedId={id}
+                    />
+                  </li>
+                ))}
+              </ul>
+              {stagedRecord?.note && !showItems && (
+                <p className="pt-3 text-center text-lg text-(--text-muted)">{stagedRecord.note}</p>
+              )}
+              {stagedRecord?.outage && !showItems && (
+                <div className="flex justify-center pt-3">
+                  <button
+                    type="button"
+                    disabled={refiring}
+                    onClick={() => void manualRefire()}
+                    className="min-h-14 rounded-full border border-(--border) bg-(--surface) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+                  >
+                    {refiring ? "Trying…" : "Try on avatar"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : undefined
+        }
+        announce={
+          staged
+            ? `Look ${stagedIndex + 1} of ${page.length}: ${staged.reason}`
+            : "Your stage"
+        }
+        position={hasResults ? `${stagedIndex + 1} of ${page.length}` : "Your stage"}
+        index={stagedIndex}
+        total={page.length}
+        onJump={(i) => {
+          setStageIndex(i);
+          setShowItems(false);
+          setSaveNote(null);
+        }}
+        hasMany={page.length > 1}
+        onPrev={() => goStage(-1)}
+        onNext={() => goStage(1)}
+        compact={hasResults}
+        silhouetteCta={
+          avatar === null && !avatarDown ? (
+            <Link
+              href="/studio"
+              className="flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
             >
-              {m}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section aria-label="Occasion" className="flex flex-col gap-3">
-        <h2 className="text-xl font-semibold">Occasion</h2>
-        <div className="flex flex-wrap gap-3">
-          {OCCASIONS.map((o) => (
-            <button
-              key={o}
-              type="button"
-              disabled={busy}
-              aria-pressed={occasion === o}
-              onClick={() => setOccasion(occasion === o ? "" : o)}
-              className={chipClass(occasion === o)}
-            >
-              {o}
-            </button>
-          ))}
-        </div>
-        <label className="flex flex-col gap-2 text-lg">
-          Anything more specific? (optional)
-          <input
-            type="text"
-            value={occasionText}
-            onChange={(event) => setOccasionText(event.target.value)}
-            placeholder="e.g. rooftop birthday"
-            maxLength={120}
-            className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
-          />
-        </label>
-        <label className="flex flex-col gap-2 text-lg">
-          Destination (optional)
-          <input
-            type="text"
-            value={destination}
-            onChange={(event) => setDestination(event.target.value)}
-            placeholder="e.g. The French Laundry"
-            maxLength={120}
-            className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
-          />
-        </label>
-      </section>
-
-      <section aria-label="When" className="flex flex-col gap-3">
-        <h2 className="text-xl font-semibold">When</h2>
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            disabled={busy}
-            aria-pressed={whenDate === null}
-            onClick={() => setWhenDate(null)}
-            className={chipClass(whenDate === null)}
-          >
-            Today
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            aria-pressed={whenDate === tomorrowISO()}
-            onClick={() => setWhenDate(tomorrowISO())}
-            className={chipClass(whenDate === tomorrowISO())}
-          >
-            Tomorrow
-          </button>
-          <label className="flex min-w-52 flex-1 items-center gap-3 text-lg">
-            Or pick a date
-            <input
-              type="date"
-              value={whenDate ?? todayISO()}
-              min={todayISO()}
-              onChange={(event) => {
-                const picked = event.target.value;
-                setWhenDate(!picked || picked === todayISO() ? null : picked);
-              }}
-              className="min-h-14 flex-1 rounded-2xl border border-(--border) bg-(--surface) px-4"
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap gap-3" role="group" aria-label="Time of day">
-          {TIMES.map((t) => (
-            <button
-              key={t}
-              type="button"
-              disabled={busy}
-              aria-pressed={timeOfDay === t}
-              onClick={() => setTimeOfDay(timeOfDay === t ? null : t)}
-              className={chipClass(timeOfDay === t)}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section aria-label="Location" className="flex flex-col gap-3">
-        <h2 className="text-xl font-semibold">Location</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            disabled={busy || locating}
-            onClick={useMyLocation}
-            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
-          >
-            {coords ? "Location set ✓" : locating ? "Locating…" : "Use my location"}
-          </button>
-          <label className="flex min-w-52 flex-1 flex-col gap-2 text-lg">
-            Or city
-            <input
-              type="text"
-              value={city}
-              onChange={(event) => handleCityChange(event.target.value)}
-              placeholder="e.g. Lisbon"
-              maxLength={120}
-              className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
-            />
-          </label>
-        </div>
-      </section>
+              Create your avatar
+            </Link>
+          ) : undefined
+        }
+      />
 
       <VoiceButton
         disabled={busy || locating}
@@ -1206,58 +1419,20 @@ export default function TodayPage() {
         )
       )}
 
-      {!canRun && !busy && (
-        <p className="text-lg text-(--text-muted)">Pick a mood or occasion, or tap to talk.</p>
-      )}
-      <div className="flex flex-col gap-3 min-[480px]:flex-row">
-        <button
-          type="button"
-          disabled={busy || !canRun || getStale}
-          onClick={() =>
-            void fetchOutfits([], "Getting your outfits…").then((run) => {
-              if (run && run.outfits.length > 0) {
-                speakOutfit(run.outfits[0], run.outfits.length, run.items, run.weather, run.dressCode);
-              }
-            })
-          }
-          className="min-h-16 w-full min-w-44 rounded-full bg-(--primary) text-xl font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) min-[480px]:flex-1"
-        >
-          {busy ? "Picking…" : "Get outfits"}
-        </button>
-        {showShuffle && (
+      {!hasResults && (
+        <div className="flex flex-col items-center gap-2">
+          {!canRun && !busy && (
+            <p className="text-lg text-(--text-muted)">Tell me about your day, or choose below.</p>
+          )}
           <button
             type="button"
             disabled={busy}
-            onClick={() => {
-              // Next page of strong looks: no AI call.
-              if (!pager) return;
-              const next = nextPage(pager);
-              setPager(next);
-              setStatus(pageStatus(next));
-            }}
-            aria-label="Shuffle to new outfit combinations"
-            className="min-h-16 w-full shrink-0 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text) min-[480px]:w-auto"
+            onClick={() => setSheetOpen(true)}
+            className="min-h-14 rounded-full px-6 text-lg font-semibold underline decoration-dotted underline-offset-4 disabled:text-(--disabled-text)"
           >
-            Shuffle
+            Or choose
           </button>
-        )}
-        {showMoreIdeas && (
-          <button
-            type="button"
-            disabled={busy || moreDepleted}
-            onClick={() => {
-              if (!pager) return;
-              void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
-            }}
-            aria-label="More ideas, asks AI again"
-            className="min-h-16 w-full shrink-0 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text) min-[480px]:w-auto"
-          >
-            More ideas (asks AI again)
-          </button>
-        )}
-      </div>
-      {getStale && canRun && !busy && (
-        <p className="text-lg text-(--text-muted)">Change mood or occasion for new looks</p>
+        </div>
       )}
       {closetPill && pager && !busy && (
         <button
@@ -1306,125 +1481,33 @@ export default function TodayPage() {
         </section>
       )}
 
-      {dressCode?.note ? (
-        <div className="flex flex-col items-start gap-2">
-          <button
-            type="button"
-            aria-expanded={dressOpen}
-            aria-label={`Dress code: ${dressCode.note}. ${dressOpen ? "Hide" : "Show"} details.`}
-            onClick={() => setDressOpen((open) => !open)}
-            className="max-w-full min-h-11 rounded-full border border-(--border) px-4 py-2 text-left text-[15px]"
-          >
-            <span className="block truncate">Dress code: {dressCode.note}</span>
-          </button>
-          {dressOpen && (
-            <p className="text-lg">
-              {dressCode.note}{" "}
-              {dressCode.url && (
-                <a href={dressCode.url} target="_blank" rel="noreferrer" className="underline">
-                  Source
-                </a>
-              )}
-            </p>
-          )}
-        </div>
-      ) : null}
-
-      {page.length > 0 && avatar === null && !avatarDown && (
-        <section
-          aria-label="See it on you"
-          className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
-        >
-          <h2 className="font-display text-2xl">See it on you</h2>
-          <p className="text-lg">
-            Create your avatar once — then every look is shown on you, in your style.
-          </p>
-          <Link
-            href="/studio"
-            className="flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
-          >
-            Create your avatar
-          </Link>
-        </section>
-      )}
-
-      {page.length > 0 && staged && avatar && (
-        <section
-          aria-label="Stage"
-          onTouchStart={(event) => {
-            touchX.current = event.touches[0]?.clientX ?? null;
-          }}
-          onTouchEnd={(event) => {
-            const start = touchX.current;
-            touchX.current = null;
-            if (start === null || page.length < 2) return;
-            const dx = (event.changedTouches[0]?.clientX ?? start) - start;
-            if (dx <= -40) goStage(1);
-            else if (dx >= 40) goStage(-1);
-          }}
-          className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
-        >
-          <p aria-live="polite" className="text-lg text-(--text-muted)">
-            Look {stageIndex + 1} of {page.length}
-          </p>
-          <div className="overflow-hidden rounded-2xl bg-(--surface-2)">
-            {stagedRender?.url && !showItems ? (
-              <img
-                src={stagedRender.url}
-                alt={`Look ${stageIndex + 1} styled on your avatar`}
-                className="aspect-[2/3] w-full animate-stage-in object-cover"
-              />
-            ) : showItems || stagedRender ? (
-              <ul className="grid grid-cols-2 gap-4 p-4" aria-label="Look garments, laid flat">
-                {stagedCards.map(({ id, card }) => (
-                  <li key={id} className="flex aspect-[3/4] items-center justify-center">
-                    <Sticker
-                      src={card.cutoutUrl}
-                      alt={`${card.type} in ${card.primary_color}`}
-                      seedId={id}
-                    />
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div
-                role="status"
-                className="flex aspect-[2/3] w-full items-center justify-center p-6 text-center"
+      {staged && (
+        <section aria-label="This look" className="flex flex-col gap-4">
+          <h2 className="font-display text-3xl">Look {stagedIndex + 1}</h2>
+          <p className="truncate text-lg">{staged.reason}</p>
+          {dressCode?.note ? (
+            <div className="flex flex-col items-start gap-2">
+              <button
+                type="button"
+                aria-expanded={dressOpen}
+                aria-label={`Dress code: ${dressCode.note}. ${dressOpen ? "Hide" : "Show"} details.`}
+                onClick={() => setDressOpen((open) => !open)}
+                className="max-w-full min-h-11 rounded-full border border-(--border) px-4 py-2 text-left text-[15px]"
               >
-                <p className="text-lg text-(--text-muted)">Dressing your avatar…</p>
-              </div>
-            )}
-          </div>
-          {stagedRender?.url && !showItems && (
-            <span
-              aria-hidden="true"
-              className="mx-auto -mt-2 h-3 w-2/3 rounded-full bg-(--border-soft) blur-[3px]"
-            />
-          )}
-          {stagedRender && !stagedRender.url && stagedRender.note && (
-            <p className="text-lg text-(--text-muted)">{stagedRender.note}</p>
-          )}
-          {stagedRender?.outage && (
-            <button
-              type="button"
-              disabled={refiring}
-              onClick={() => void manualRefire()}
-              className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
-            >
-              {refiring ? "Trying…" : "Try on avatar"}
-            </button>
-          )}
-          {whenBits.length > 0 && (
-            <p>
-              <Tape label={whenBits.join(" · ")} seedId={`${staged.key}-when`} />
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2" aria-label="Items in this look">
-            {stagedCards.map(({ id, card }) => (
-              <Tape key={id} label={tapeLabel(card)} seedId={id} />
-            ))}
-          </div>
-          <p className="text-lg">{staged.reason}</p>
+                <span className="block truncate">Dress code: {dressCode.note}</span>
+              </button>
+              {dressOpen && (
+                <p className="text-lg">
+                  {dressCode.note}{" "}
+                  {dressCode.url && (
+                    <a href={dressCode.url} target="_blank" rel="noreferrer" className="underline">
+                      Source
+                    </a>
+                  )}
+                </p>
+              )}
+            </div>
+          ) : null}
           {staged.source === "rules" ? (
             <div>
               <button
@@ -1448,52 +1531,84 @@ export default function TodayPage() {
               Styled by AI
             </p>
           )}
-          <div className="flex gap-3">
+          <ul
+            className="flex snap-x gap-3 overflow-x-auto pb-2"
+            aria-label="Garments in this look"
+          >
+            {stagedCards.map(({ id, card }) => (
+              <li key={id} className="w-28 shrink-0 snap-start">
+                <button
+                  type="button"
+                  onClick={() => void openGarment(id)}
+                  aria-label={`${card.type} in ${card.primary_color}. View details.`}
+                  className="flex w-full flex-col items-center gap-1 rounded-2xl border border-(--border-soft) bg-(--surface-2) p-2"
+                >
+                  <span className="flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--paper) p-1">
+                    <Sticker
+                      src={card.cutoutUrl}
+                      alt={`${card.type} in ${card.primary_color}`}
+                      seedId={id}
+                    />
+                  </span>
+                  <span className="max-w-full">
+                    <Tape label={tapeLabel(card)} seedId={id} />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
-              disabled={page.length < 2}
-              onClick={() => goStage(-1)}
-              aria-label="Previous look"
-              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+              onClick={() => saveLook(staged)}
+              className="flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-4 text-lg font-semibold whitespace-nowrap text-(--primary-text)"
             >
-              ‹ Prev
+              ♥ Save look
             </button>
-            <button
-              type="button"
-              disabled={page.length < 2}
-              onClick={() => goStage(1)}
-              aria-label="Next look"
-              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            <Link
+              href={`/dress?ids=${staged.item_ids.join(",")}`}
+              className="flex min-h-14 items-center justify-center rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap"
             >
-              Next ›
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => saveLook(staged)}
-            className="flex min-h-14 w-full items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold whitespace-nowrap text-(--primary-text)"
-          >
-            Save look
-          </button>
-          {saveNote && (
-            <p role="status" className="text-lg">
-              {saveNote}
-            </p>
-          )}
-          <Link
-            href={`/dress?ids=${staged.item_ids.join(",")}`}
-            className="flex min-h-14 w-full items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold"
-          >
-            Get dressed
-          </Link>
-          <div className="flex flex-col gap-3 min-[480px]:flex-row">
+              Get dressed
+            </Link>
+            {showShuffle && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  // Next page of strong looks: no AI call.
+                  if (!pager) return;
+                  const next = nextPage(pager);
+                  setPager(next);
+                  setStatus(pageStatus(next));
+                }}
+                aria-label="Shuffle to new outfit combinations"
+                className="flex min-h-14 items-center justify-center rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+              >
+                Shuffle
+              </button>
+            )}
+            {showMoreIdeas && (
+              <button
+                type="button"
+                disabled={busy || moreDepleted}
+                onClick={() => {
+                  if (!pager) return;
+                  void fetchOutfits(pager.seen, "Finding more ideas…", false, undefined, "more");
+                }}
+                aria-label="More ideas, asks AI again"
+                className="flex min-h-14 items-center justify-center rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+              >
+                More ideas
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
                 unlockSpeech();
                 speakOutfit(staged, page.length, itemCards, weather, dressCode);
               }}
-              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap"
+              className="flex min-h-14 items-center justify-center rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap"
             >
               Read it to me
             </button>
@@ -1501,148 +1616,130 @@ export default function TodayPage() {
               type="button"
               aria-expanded={showItems}
               onClick={() => setShowItems((v) => !v)}
-              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap"
+              className="flex min-h-14 items-center justify-center rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap"
             >
               {showItems ? "Hide items" : "Show items"}
             </button>
           </div>
+          {saveNote && (
+            <p role="status" className="text-lg">
+              {saveNote}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex gap-2" role="group" aria-label={`Rate look ${stagedIndex + 1}`}>
+              <button
+                type="button"
+                aria-pressed={votes[staged.key] === 1}
+                aria-label={`Thumbs up for look ${stagedIndex + 1}`}
+                onClick={() => void vote(staged.key, staged.item_ids, 1)}
+                className={`flex min-h-11 min-w-11 items-center justify-center rounded-full border text-xl ${
+                  votes[staged.key] === 1
+                    ? "border-(--primary) bg-(--primary) text-(--primary-text)"
+                    : "border-(--border)"
+                }`}
+              >
+                👍
+              </button>
+              <button
+                type="button"
+                aria-pressed={votes[staged.key] === -1}
+                aria-label={`Thumbs down for look ${stagedIndex + 1}`}
+                onClick={() => void vote(staged.key, staged.item_ids, -1)}
+                className={`flex min-h-11 min-w-11 items-center justify-center rounded-full border text-xl ${
+                  votes[staged.key] === -1
+                    ? "border-(--primary) bg-(--primary) text-(--primary-text)"
+                    : "border-(--border)"
+                }`}
+              >
+                👎
+              </button>
+            </div>
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              className="min-h-11 px-2 text-base underline"
+            >
+              Change choices
+            </button>
+            <button
+              type="button"
+              onClick={startOver}
+              className="min-h-11 px-2 text-base underline"
+            >
+              Start over
+            </button>
+          </div>
+          {getStale && canRun && !busy && (
+            <p className="text-lg text-(--text-muted)">Change mood or occasion for new looks</p>
+          )}
         </section>
       )}
 
-      {page.length > 0 && (
-        <section aria-label="Outfits" className="flex flex-col gap-8">
-          {relaxed && (
-            <div className="flex flex-wrap items-center gap-3">
-              <Tape label="Best with your current closet" seedId="relaxed" />
-              <Link href="/capture" className="text-lg underline">
-                Add clothes
-              </Link>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              if (page.length > 0) {
-                speakOutfit(page[0], page.length, itemCards, weather, dressCode);
-              }
-            }}
-            className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold"
-          >
-            Read again
-          </button>
-          {weather && <p className="text-lg">{weatherLine(weather)}</p>}
-          {page.map((outfit, index) => {
-            const cards = outfit.item_ids
-              .map((id) => ({ id, card: itemCards[id] }))
-              .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
-              .sort((a, b) => slotRank(a.card.slot) - slotRank(b.card.slot));
-            const occasionWord = (occasionText.trim().split(/\s+/)[0] || occasion || "").toLowerCase();
-            const day = new Date().toLocaleDateString(undefined, { weekday: "short" });
-            const tapeText =
-              weather && occasionWord
-                ? `${day} · ${formatTemp(weather.highC)} · ${occasionWord}`
-                : weather
-                  ? `${day} · ${formatTemp(weather.highC)}`
-                  : null;
-            return (
-              <article
-                key={outfit.key}
-                aria-label={`Outfit ${index + 1} of ${page.length}`}
-                className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
-              >
-                <h2 className="font-display text-2xl">
-                  Outfit {index + 1} of {page.length}
-                </h2>
-                {tapeText && (
-                  <p className="self-start">
-                    <Tape label={tapeText} seedId={outfit.key} />
-                  </p>
-                )}
-                {outfit.source === "rules" ? (
-                  <div className="self-start">
-                    <button
-                      type="button"
-                      aria-expanded={rulesNoteKey === outfit.key}
-                      onClick={() =>
-                        setRulesNoteKey((k) => (k === outfit.key ? null : outfit.key))
-                      }
-                      className="flex min-h-11 items-center gap-1 text-[13px] text-(--text-muted) underline decoration-dotted underline-offset-4"
-                    >
-                      <SparkIcon />
-                      Quick pick
-                    </button>
-                    {rulesNoteKey === outfit.key && (
-                      <p className="text-[13px] text-(--text-muted)">
-                        AI was busy, so this pick uses simple style rules.
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="flex items-center gap-1 self-start text-[13px] text-(--text-muted)">
-                    <SparkIcon />
-                    Styled by AI
-                  </p>
-                )}
-                <ul
-                  className="grid grid-cols-2 gap-4 rounded-2xl bg-(--surface-2) p-4 md:grid-cols-3"
-                  aria-label="Outfit garments, laid flat"
-                >
-                  {cards.map(({ id, card }) => (
-                    <li key={id} className="flex flex-col items-center gap-1">
-                      <span className="flex aspect-[3/4] w-full items-center justify-center">
-                        <Sticker
-                          src={card.cutoutUrl}
-                          alt={`${card.type} in ${card.primary_color}`}
-                          seedId={id}
-                          rich
-                        />
-                      </span>
-                      <span className="mt-1">
-                        <Tape label={tapeLabel(card)} seedId={id} />
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href={`/dress?ids=${outfit.item_ids.join(",")}`}
-                  className="flex min-h-14 w-full items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold"
-                >
-                  Get dressed with me
-                </Link>
-                <p className="text-lg">{outfit.reason}</p>
-                {weather && <p className="text-(--text-muted)">{outfit.weather_note}</p>}
-                <div className="flex gap-3" role="group" aria-label={`Rate outfit ${index + 1}`}>
-                  <button
-                    type="button"
-                    aria-pressed={votes[outfit.key] === 1}
-                    aria-label={`Thumbs up for outfit ${index + 1}`}
-                    onClick={() => void vote(outfit.key, outfit.item_ids, 1)}
-                    className={`min-h-11 flex-1 rounded-full border px-4 text-base font-semibold ${
-                      votes[outfit.key] === 1
-                        ? "border-(--primary) bg-(--primary) text-(--primary-text)"
-                        : "border-(--border)"
-                    }`}
-                  >
-                    Loved it
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={votes[outfit.key] === -1}
-                    aria-label={`Thumbs down for outfit ${index + 1}`}
-                    onClick={() => void vote(outfit.key, outfit.item_ids, -1)}
-                    className={`min-h-11 flex-1 rounded-full border px-4 text-base font-semibold ${
-                      votes[outfit.key] === -1
-                        ? "border-(--primary) bg-(--primary) text-(--primary-text)"
-                        : "border-(--border)"
-                    }`}
-                  >
-                    Not for me
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </section>
+      {hasResults && relaxed && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Tape label="Best with your current closet" seedId="relaxed" />
+          <Link href="/capture" className="text-lg underline">
+            Add clothes
+          </Link>
+        </div>
+      )}
+      {hasResults && weather && staged && (
+        <p className="text-lg">
+          {weatherLine(weather)} {staged.weather_note}
+        </p>
+      )}
+      {garmentId && !garmentEditing && (
+        <GarmentDetailDialog
+          title={
+            garmentItem
+              ? `${garmentItem.tags.type} in ${garmentItem.tags.primary_color}`
+              : "Garment"
+          }
+          loading={garmentLoading}
+          item={garmentItem}
+          onEdit={() => setGarmentEditing(true)}
+          onClose={() => {
+            setGarmentId(null);
+            setGarmentItem(null);
+          }}
+        />
+      )}
+      {garmentEditing && garmentItem && (
+        <ItemEditor
+          item={toGarmentEditable(garmentItem)}
+          onSave={(id, draft) => saveGarmentEdit(id, draft)}
+          onClose={() => setGarmentEditing(false)}
+        />
+      )}
+      {sheetOpen && (
+        <StyleSheet
+          moods={MOODS}
+          occasions={OCCASIONS}
+          times={TIMES}
+          mood={mood}
+          occasion={occasion}
+          occasionText={occasionText}
+          destination={destination}
+          city={city}
+          whenDate={whenDate}
+          timeOfDay={timeOfDay}
+          coords={coords}
+          locating={locating}
+          busy={busy}
+          canRun={canRun}
+          onMood={(v) => setMood(v ?? "")}
+          onOccasion={(v) => setOccasion(v ?? "")}
+          onOccasionText={setOccasionText}
+          onDestination={setDestination}
+          onCity={handleCityChange}
+          onWhenDate={setWhenDate}
+          onTimeOfDay={setTimeOfDay}
+          onUseLocation={useMyLocation}
+          onSubmit={runFresh}
+          onClose={() => setSheetOpen(false)}
+        />
       )}
     </main>
   );

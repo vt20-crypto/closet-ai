@@ -8,6 +8,18 @@ import { writeJsonToStore } from "./blobStore.ts";
  */
 export const AVATAR_GENERATIONS_PER_WEEK = 3;
 export const AVATAR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Demo override: AVATAR_WEEKLY_LIMIT env var replaces the default 3.
+ * Non-numeric, fractional, zero and negative values fall back to 3.
+ */
+export function avatarWeeklyLimit(): number {
+  const raw = process.env.AVATAR_WEEKLY_LIMIT;
+  if (raw === undefined) return AVATAR_GENERATIONS_PER_WEEK;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return AVATAR_GENERATIONS_PER_WEEK;
+  return parsed;
+}
 /** Cached renders are free; only fresh try-on renders count. */
 export const RENDER_MAX_PER_DAY = 20;
 export const DRESS_SESSIONS_MAX_PER_DAY = 3;
@@ -29,10 +41,14 @@ export function inAvatarWindow(now: number, generations: number[]): number[] {
     .sort((a, b) => a - b);
 }
 
-/** Pure allowance math: 3 generations per rolling 7 days. */
-export function avatarAllowance(now: number, generations: number[]): AvatarAllowance {
+/** Pure allowance math: `limit` generations per rolling 7 days. */
+export function avatarAllowance(
+  now: number,
+  generations: number[],
+  limit: number = avatarWeeklyLimit(),
+): AvatarAllowance {
   const recent = inAvatarWindow(now, generations);
-  const remaining = Math.max(0, AVATAR_GENERATIONS_PER_WEEK - recent.length);
+  const remaining = Math.max(0, limit - recent.length);
   if (remaining > 0) return { allowed: true, remaining, resetAt: null };
   const oldest = recent[0] ?? now;
   return { allowed: false, remaining: 0, resetAt: new Date(oldest + AVATAR_WINDOW_MS).toISOString() };
@@ -63,8 +79,11 @@ export async function recordAvatarGeneration(store: BlobStore, now: number): Pro
 }
 
 /** "You can create a new avatar again on November 11." */
-export function avatarLimitMessage(resetAt: string | null): string {
-  if (!resetAt) return "You've used all 3 avatar generations for this week.";
+export function avatarLimitMessage(
+  resetAt: string | null,
+  limit: number = avatarWeeklyLimit(),
+): string {
+  if (!resetAt) return `You've used all ${limit} avatar generations for this week.`;
   const date = new Date(resetAt).toLocaleDateString("en-US", { month: "long", day: "numeric" });
   return `You can create a new avatar again on ${date}.`;
 }

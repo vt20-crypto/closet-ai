@@ -77,11 +77,13 @@ const CHIP_OCCASIONS: Record<string, OccasionBucket> = {
   gym: "gym",
   work: "office",
   date: "casual-date",
+  "date night": "casual-date",
   party: "party",
   brunch: "brunch",
   dinner: "casual-date",
   class: "casual",
   errands: "casual",
+  casual: "casual",
 };
 
 const TEXT_OCCASIONS: Array<[RegExp, OccasionBucket]> = [

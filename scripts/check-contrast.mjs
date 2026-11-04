@@ -9,6 +9,8 @@ const TOKENS = {
     background: "#fbf6ec",
     surface: "#ffffff",
     "surface-2": "#f3ebdd",
+    // Image-well only (garment cutouts, never a text background): no text pair.
+    paper: "#fffdf8",
     text: "#231a17",
     "text-muted": "#5e524b",
     border: "#8a7b70",
@@ -28,6 +30,8 @@ const TOKENS = {
     background: "#17120f",
     surface: "#241d19",
     "surface-2": "#2e2520",
+    // Image-well only (garment cutouts, never a text background): no text pair.
+    paper: "#e8e2d6",
     text: "#f6eee3",
     "text-muted": "#cdbfb2",
     border: "#9c8b7e",

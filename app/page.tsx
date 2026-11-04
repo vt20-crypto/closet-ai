@@ -90,7 +90,7 @@ export default async function Home() {
                   aria-label={`${item.tape}, view in closet`}
                   className="flex flex-col items-center rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-3 shadow-[0_10px_24px_var(--shadow)]"
                 >
-                  <span className="flex aspect-[3/4] w-full items-center justify-center">
+                  <span className="flex aspect-[3/4] w-full items-center justify-center rounded-xl bg-(--paper) p-1">
                     <Sticker src={item.cutoutUrl} alt={item.alt} seedId={item.id} rich />
                   </span>
                   <span className="mt-1 max-w-full">

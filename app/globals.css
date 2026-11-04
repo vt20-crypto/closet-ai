@@ -35,6 +35,7 @@ html[data-theme="light"] {
   --tabbar-active: #ff7a5c;
   --checkerboard-light: #ffffff;
   --checkerboard-dark: #e2e2e2;
+  --paper: #fffdf8;
 }
 
 html[data-theme="dark"] {
@@ -59,6 +60,7 @@ html[data-theme="dark"] {
   --tabbar-active: #ff7a5c;
   --checkerboard-light: #ffffff;
   --checkerboard-dark: #e2e2e2;
+  --paper: #e8e2d6;
 }
 
 /* Auto (default): follow the OS. Explicit light/dark above win. */
@@ -85,6 +87,7 @@ html[data-theme="dark"] {
     --tabbar-active: #ff7a5c;
     --checkerboard-light: #ffffff;
     --checkerboard-dark: #e2e2e2;
+    --paper: #e8e2d6;
   }
 }
 
@@ -216,11 +219,33 @@ body::before {
   animation: stage-in 400ms ease-out;
 }
 
+/* Slow light sweep over the base avatar while a look renders. */
+@keyframes stage-shimmer {
+  0% {
+    background-position: -150% 0;
+  }
+  100% {
+    background-position: 250% 0;
+  }
+}
+
+.animate-stage-shimmer {
+  background-image: linear-gradient(
+    105deg,
+    transparent 42%,
+    color-mix(in srgb, var(--pop) 38%, transparent) 50%,
+    transparent 58%
+  );
+  background-size: 220% 100%;
+  animation: stage-shimmer 2.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-sticker-pop,
   .animate-stamp,
   .animate-mic-pulse,
-  .animate-stage-in {
+  .animate-stage-in,
+  .animate-stage-shimmer {
     animation: none;
   }
 }

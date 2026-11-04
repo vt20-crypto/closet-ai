@@ -40,7 +40,7 @@ export default function GarmentTile({
   const [loaded, setLoaded] = useState(!imageUrl);
   const body = (
     <>
-      <span className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--surface) p-3">
+      <span className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--paper) p-3">
         {!loaded && (
           <span aria-hidden="true" className="absolute inset-0 bg-(--surface-2) motion-safe:animate-pulse" />
         )}
