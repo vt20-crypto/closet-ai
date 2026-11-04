@@ -40,7 +40,7 @@ export default function GarmentTile({
   const [loaded, setLoaded] = useState(!imageUrl);
   const body = (
     <>
-      <span className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--surface)">
+      <span className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl bg-(--surface) p-3">
         {!loaded && (
           <span aria-hidden="true" className="absolute inset-0 bg-(--surface-2) motion-safe:animate-pulse" />
         )}
@@ -51,7 +51,7 @@ export default function GarmentTile({
             seedId={id}
             lazy
             onLoad={() => setLoaded(true)}
-            className={`transition-opacity duration-200 ${loaded ? "opacity-100" : "opacity-0"}`}
+            className={`p-2 transition-opacity duration-200 ${loaded ? "opacity-100" : "opacity-0"}`}
           />
         )}
         {badge && (
@@ -59,10 +59,18 @@ export default function GarmentTile({
             {badge}
           </span>
         )}
-        {tape && <Tape label={tape} seedId={id} />}
+        {tape && (
+          <span className="pointer-events-none absolute inset-x-2 bottom-2 flex justify-center">
+            <Tape label={tape} seedId={id} className="max-w-full" />
+          </span>
+        )}
       </span>
-      <span className="truncate text-lg leading-snug font-semibold">{tape || title}</span>
-      {caption && <span className="truncate text-sm text-(--text-muted)">{caption}</span>}
+      <span className="block w-full min-w-0 text-lg leading-snug font-semibold break-words line-clamp-2">
+        {tape || title}
+      </span>
+      {caption && (
+        <span className="block w-full min-w-0 text-sm break-words text-(--text-muted) line-clamp-2">{caption}</span>
+      )}
     </>
   );
   const frame =

@@ -2,7 +2,10 @@ import "server-only";
 
 import { del, list, put } from "@vercel/blob";
 
+import { blobOpCounts } from "./blobStore.ts";
+import { getBlobStore } from "./cache.ts";
 import { isPhotoPathname, photoMetaPath } from "./photoPaths";
+import { isStorageUnavailable, StorageUnavailableError } from "./storage.ts";
 
 export { isPhotoPathname, photoMetaPath };
 
@@ -33,27 +36,43 @@ export async function getPhotoMeta(photoPathname: string): Promise<PhotoMeta | n
 
 export async function listPhotoMeta(): Promise<Record<string, PhotoMeta>> {
   const out: Record<string, PhotoMeta> = {};
+  const store = getBlobStore();
+  let failures = 0;
+  let outage: StorageUnavailableError | null = null;
   let cursor: string | undefined;
   do {
-    const page = await list({ prefix: "photos-meta/", cursor });
+    let page;
+    try {
+      blobOpCounts.list += 1;
+      page = await list({ prefix: "photos-meta/", cursor });
+    } catch (err) {
+      const status = (err as { statusCode?: number }).statusCode ?? 0;
+      console.log(`blob_list status=${status || "network-fail"} prefix=photos-meta/`);
+      if (Object.keys(out).length > 0) return out;
+      throw new StorageUnavailableError(status, "prefix:photos-meta/");
+    }
     const metas = await Promise.all(
       page.blobs
         .filter((b) => b.pathname.endsWith(".json"))
         .map(async (b) => {
           try {
-            const res = await fetch(b.url, { cache: "no-store" });
-            if (!res.ok) return null;
-            return (await res.json()) as PhotoMeta;
-          } catch {
+            return await store.fetchJson<PhotoMeta>(b.url);
+          } catch (err) {
+            if (isStorageUnavailable(err)) outage = err;
+            else failures += 1;
             return null;
           }
         }),
     );
     for (const m of metas) {
       if (m && isPhotoPathname(m.photoPathname)) out[m.photoPathname] = m;
+      else if (m === null) failures += 1;
     }
     cursor = page.hasMore ? page.cursor : undefined;
   } while (cursor);
+  if (Object.keys(out).length === 0 && (outage || failures > 0)) {
+    if (outage) throw outage;
+  }
   return out;
 }
 

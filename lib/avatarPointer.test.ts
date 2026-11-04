@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -7,6 +7,7 @@ import {
   isCandidatePath,
   pointerPath,
   readAvatarPointer,
+  resetAvatarPointerCacheForTests,
   writeAvatarPointer,
   type AvatarPointer,
 } from "./avatarPointer.ts";
@@ -46,6 +47,11 @@ function makeFakeStore() {
         files.delete(pathname);
         deleted.push(pathname);
       }
+    },
+    async headBlob(pathname: string) {
+      const file = files.get(pathname);
+      if (!file) return null;
+      return { url: `blob://${pathname}`, pathname, uploadedAt: new Date(file.uploadedAt).toISOString() };
     },
     async fetchJson<T>(url: string) {
       const match = /^blob:\/\/(.+)$/.exec(url);
@@ -91,6 +97,7 @@ describe("writeJsonToStore", () => {
 });
 
 describe("avatar pointer redo", () => {
+  beforeEach(() => resetAvatarPointerCacheForTests());
   it("reads back the newest version after a redo", async () => {
     const { store } = makeFakeStore();
     await writeAvatarPointer(store, pointer("v1"));

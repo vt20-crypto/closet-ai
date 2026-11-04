@@ -18,6 +18,9 @@ export interface RenderInputs {
   inputBytes: number;
 }
 
+/** Per-instance memory cache of fetched+shrunk bytes, keyed by Blob URL. */
+const bytesCache = new Map<string, Buffer>();
+
 /**
  * Load + shrink one render's inputs: the avatar (from Blob) and every
  * garment cutout. Throws on unknown ids or an unloadable avatar. Never logs
@@ -32,17 +35,26 @@ export async function loadRenderInputs(
   const missing = itemIds.filter((id) => !byId.has(id));
   if (missing.length > 0) throw new Error("Unknown closet item.");
 
-  const avatarRes = await fetch(avatarUrl, { cache: "no-store" });
-  if (!avatarRes.ok) throw new Error("Could not load the avatar.");
-  const avatarBytes = await fitInside(Buffer.from(await avatarRes.arrayBuffer()), AVATAR_MAX_SIDE);
+  let avatarBytes = bytesCache.get(avatarUrl);
+  if (!avatarBytes) {
+    const avatarRes = await fetch(avatarUrl, { cache: "no-store" });
+    if (!avatarRes.ok) throw new Error("Could not load the avatar.");
+    avatarBytes = await fitInside(Buffer.from(await avatarRes.arrayBuffer()), AVATAR_MAX_SIDE);
+    bytesCache.set(avatarUrl, avatarBytes);
+  }
   const avatarFormat = detectImageFormat(avatarBytes);
 
   const cutoutDataUrls: string[] = [];
   let inputBytes = avatarBytes.length;
   for (const id of itemIds) {
-    const cutoutRes = await fetch(byId.get(id)!.cutoutUrl, { cache: "no-store" });
-    if (!cutoutRes.ok) throw new Error("Could not load a garment cutout.");
-    const shrunk = await fitInside(Buffer.from(await cutoutRes.arrayBuffer()), CUTOUT_MAX_SIDE);
+    const cutoutUrl = byId.get(id)!.cutoutUrl;
+    let shrunk = bytesCache.get(cutoutUrl);
+    if (!shrunk) {
+      const cutoutRes = await fetch(cutoutUrl, { cache: "no-store" });
+      if (!cutoutRes.ok) throw new Error("Could not load a garment cutout.");
+      shrunk = await fitInside(Buffer.from(await cutoutRes.arrayBuffer()), CUTOUT_MAX_SIDE);
+      bytesCache.set(cutoutUrl, shrunk);
+    }
     inputBytes += shrunk.length;
     const format = detectImageFormat(shrunk);
     cutoutDataUrls.push(`data:${format.contentType};base64,${shrunk.toString("base64")}`);

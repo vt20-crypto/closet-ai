@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { logBlobUsage } from "@/lib/blobStore";
 import { listItems } from "@/lib/closet";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import type { DressState, DressStep } from "@/lib/dress";
 import {
   createRetryBudget,
@@ -102,6 +104,8 @@ export async function POST(req: Request) {
       stopped: outcome.stopped,
     });
   } catch (err) {
+    logBlobUsage("dress/replan");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     // Only outage signatures become the friendly hiccup (same rule as /api/outfits).
     const outage = isOutageError(err);
     if (outage) {

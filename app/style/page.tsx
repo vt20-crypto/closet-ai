@@ -240,6 +240,8 @@ export default function TodayPage() {
 
   // Stage: avatar spotlight for the selected look.
   const [avatar, setAvatar] = useState<{ url: string; version: string } | null | undefined>(undefined);
+  // Storage outage: suppress the "Create your avatar" CTA (never on read error).
+  const [avatarDown, setAvatarDown] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
   const [showItems, setShowItems] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
@@ -382,10 +384,13 @@ export default function TodayPage() {
 
   // On return to the tab, compare the closet version with the one the
   // current looks were picked from. A mismatch shows a quiet refresh pill —
-  // never a popup, never an auto re-run.
+  // never a popup, never an auto re-run. At most one check per 60s.
   useEffect(() => {
+    let lastCheck = 0;
     const check = () => {
       if (!pagerRef.current) return;
+      if (Date.now() - lastCheck < 60_000) return;
+      lastCheck = Date.now();
       void (async () => {
         const version = await readClosetVersion();
         if (!version) return;
@@ -467,8 +472,17 @@ export default function TodayPage() {
     void (async () => {
       try {
         const res = await fetch("/api/avatar", { cache: "no-store" });
-        const body = (await res.json()) as { avatar?: { url: string; version: string } | null };
-        if (!cancelled) setAvatar(res.ok ? (body.avatar ?? null) : null);
+        const body = (await res.json()) as {
+          avatar?: { url: string; version: string } | null;
+          code?: string;
+        };
+        if (cancelled) return;
+        if (res.status === 503 && body.code === "storage_unavailable") {
+          setAvatarDown(true);
+          return;
+        }
+        setAvatarDown(false);
+        setAvatar(res.ok ? (body.avatar ?? null) : null);
       } catch {
         if (!cancelled) setAvatar(null);
       }
@@ -837,6 +851,10 @@ export default function TodayPage() {
       return { outfits: currentPage(started), items, weather: nextWeather, dressCode: nextDress };
     } catch (err) {
       window.clearTimeout(hiccupTimer);
+      if ((err as { code?: string }).code === "storage_unavailable") {
+        setStatus("Can't reach your closet right now. Your pieces are safe - try again in a minute.");
+        return null;
+      }
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
         setStatus(META_HICCUP_MESSAGE);
         await new Promise((resolve) => setTimeout(resolve, 10_000));
@@ -1312,7 +1330,7 @@ export default function TodayPage() {
         </div>
       ) : null}
 
-      {page.length > 0 && avatar === null && (
+      {page.length > 0 && avatar === null && !avatarDown && (
         <section
           aria-label="See it on you"
           className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"

@@ -200,10 +200,13 @@ function toEditable(item: ClosetItem): EditableItem {
   };
 }
 
+const STORAGE_DOWN = "Can't reach your closet right now. Your pieces are safe - try again in a minute.";
+
 export default function ClosetPage() {
   const [items, setItems] = useState<ClosetItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState("Loading your closet…");
+  const [storageDown, setStorageDown] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [retagging, setRetagging] = useState(false);
   const [editing, setEditing] = useState<ClosetItem | null>(null);
@@ -214,9 +217,18 @@ export default function ClosetPage() {
     let cancelled = false;
     fetch("/api/closet", { cache: "no-store" })
       .then(async (res) => {
-        const body = (await res.json()) as { items?: ClosetItem[]; error?: string };
+        const body = (await res.json()) as { items?: ClosetItem[]; error?: string; code?: string };
+        if (res.status === 503 && body.code === "storage_unavailable") {
+          if (!cancelled) {
+            setStorageDown(true);
+            setStatus(STORAGE_DOWN);
+            setLoaded(true);
+          }
+          return;
+        }
         if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
         if (!cancelled) {
+          setStorageDown(false);
           setItems(body.items ?? []);
           setLoaded(true);
           setStatus(
@@ -332,7 +344,7 @@ export default function ClosetPage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
-      {needsFit && (
+      {!storageDown && needsFit && (
         <div className="flex flex-col items-start gap-2">
           <button
             type="button"
@@ -349,7 +361,8 @@ export default function ClosetPage() {
           )}
         </div>
       )}
-      {[...groups.entries()].map(([type, group]) => (
+      {!storageDown &&
+        [...groups.entries()].map(([type, group]) => (
         <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-3">
           <h2 className="font-display text-2xl capitalize">
             {type} · {group.length}

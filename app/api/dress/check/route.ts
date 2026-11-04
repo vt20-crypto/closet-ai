@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import sharp from "sharp";
 
+import { logBlobUsage } from "@/lib/blobStore";
 import { listItems, type ClosetItem } from "@/lib/closet";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import {
   createRetryBudget,
   isOutageError,
@@ -93,6 +95,8 @@ export async function POST(req: Request) {
     console.log(`dress check_ms=${Date.now() - started} verdict=${verdict} final=${finalStep ? 1 : 0}`);
     return NextResponse.json({ ...result, verdict, say });
   } catch (err) {
+    logBlobUsage("dress/check");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     // Only outage signatures become the friendly hiccup; 400/401 and other
     // failures surface with their real message (same rule as /api/outfits).
     const outage = isOutageError(err);

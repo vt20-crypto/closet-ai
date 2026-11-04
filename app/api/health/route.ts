@@ -12,7 +12,7 @@ import {
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 5 * 60_000;
 
 let cache: { at: number; model: string; latencyMs: number; image: boolean } | null = null;
 

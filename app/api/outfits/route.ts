@@ -30,7 +30,9 @@ import {
   type StyleContext,
   type StyleProfile,
 } from "@/lib/styleRules";
+import { logBlobUsage } from "@/lib/blobStore";
 import { hashKey, readCache, writeCache } from "@/lib/cache";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import { geocodeCity, getWeatherForDate, type WeatherSummary } from "@/lib/weather";
 
 export const maxDuration = 60;
@@ -101,6 +103,7 @@ export async function POST(request: Request) {
     const missing: MissingCategory[] = coverageMissing(counts);
     if (missing.length > 0) {
       console.log(`outfits total_ms=${Math.round(performance.now() - tAll)} missing=${missing.join(",")}`);
+      logBlobUsage("outfits");
       return NextResponse.json({ outfits: [], missing });
     }
 
@@ -468,6 +471,7 @@ export async function POST(request: Request) {
         `combos=${combosGenerated} filtered=${afterFilters} rule_relaxed=${ruleRelaxed ?? "none"} top_rule=${topRuleScore.toFixed(2)} ` +
         `chosen=[${picked.map((o) => o.key).join(",")}] occasion=${occasion ?? "-"} mood=${mood ?? "-"} types=${pickedTypes} when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
     );
+    logBlobUsage("outfits");
     return NextResponse.json({
       source,
       relaxed,
@@ -487,6 +491,8 @@ export async function POST(request: Request) {
       missing: [],
     });
   } catch (err) {
+    logBlobUsage("outfits");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Outfit picking failed.";
     console.log(`outfits ERROR ${message.slice(0, 160)}`);
     // Only outage signatures become the friendly hiccup; 400/401 and other

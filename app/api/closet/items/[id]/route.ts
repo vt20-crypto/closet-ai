@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
+import { logBlobUsage } from "@/lib/blobStore";
 import { deleteItem, listItems, saveItem, type ClosetItem } from "@/lib/closet";
 import { validateItemEdit } from "@/lib/itemEdit";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -11,8 +13,11 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     const { id } = await params;
     if (!id) return NextResponse.json({ error: "Missing item id." }, { status: 400 });
     await deleteItem(id);
+    logBlobUsage("closet/items-delete");
     return NextResponse.json({ deleted: id });
   } catch (err) {
+    logBlobUsage("closet/items-delete");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Could not delete the item.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -46,8 +51,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     };
     if (typeof body.laundry === "boolean") updated.laundry = body.laundry;
     await saveItem(updated, { allowOverwrite: true });
+    logBlobUsage("closet/items-patch");
     return NextResponse.json({ item: updated });
   } catch (err) {
+    logBlobUsage("closet/items-patch");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Could not save the item.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

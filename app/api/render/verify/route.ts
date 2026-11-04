@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 
 import { readAvatarPointer } from "@/lib/avatarPointer";
+import { logBlobUsage } from "@/lib/blobStore";
 import { getBlobStore, readCache, writeCache } from "@/lib/cache";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import { closetStamp } from "@/lib/closet";
 import { editImage } from "@/lib/meta/image";
 import {
@@ -146,6 +148,8 @@ export async function POST(req: Request) {
     console.log(`render-verify ms=${routeMs()} verified=${finalVerified ? 1 : 0} avatar=${version}`);
     return NextResponse.json({ url: finalUrl, cached: false, verified: finalVerified, invented });
   } catch (err) {
+    logBlobUsage("render/verify");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Verify failed.";
     if (/content_policy_violation/i.test(message)) {
       console.log(`render-verify error=content-policy route_ms=${routeMs()}`);

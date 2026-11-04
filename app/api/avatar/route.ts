@@ -8,7 +8,9 @@ import {
   writeAvatarPointer,
   type AvatarPointer,
 } from "@/lib/avatarPointer";
+import { logBlobUsage } from "@/lib/blobStore";
 import { getBlobStore } from "@/lib/cache";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import { editImage } from "@/lib/meta/image";
 import {
   createRetryBudget,
@@ -33,11 +35,18 @@ const VIBES = ["playful", "minimal", "edgy", "classic"] as const;
 /** Current avatar (newest versioned pointer), or null when none yet. */
 export async function GET() {
   const store = getBlobStore();
-  // Leaving a redo without choosing = Cancel: orphans die on the next load.
-  await deleteCandidates(store).catch(() => undefined);
-  const pointer = await readAvatarPointer(store);
-  if (!pointer) return NextResponse.json({ avatar: null });
-  return NextResponse.json({ avatar: { url: pointer.url, version: pointer.version } });
+  try {
+    // Leaving a redo without choosing = Cancel: orphans die on the next load.
+    await deleteCandidates(store).catch(() => undefined);
+    const pointer = await readAvatarPointer(store);
+    logBlobUsage("avatar");
+    if (!pointer) return NextResponse.json({ avatar: null });
+    return NextResponse.json({ avatar: { url: pointer.url, version: pointer.version } });
+  } catch (err) {
+    logBlobUsage("avatar");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
+    throw err;
+  }
 }
 
 function isDataUrl(value: unknown): value is string {

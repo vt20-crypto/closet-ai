@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 
 import { readAvatarPointer } from "@/lib/avatarPointer";
+import { logBlobUsage } from "@/lib/blobStore";
 import { getBlobStore, readCache, writeCache } from "@/lib/cache";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import { closetStamp } from "@/lib/closet";
 import { editImage } from "@/lib/meta/image";
 import {
@@ -49,6 +51,7 @@ export async function POST(req: Request) {
     const cached = await readCache<RenderRecord>(key, Number.POSITIVE_INFINITY);
     if (cached.hit && cached.data) {
       console.log(`render ms=${routeMs()} cached=1 verified=${cached.data.verified ? 1 : 0} avatar=${version}`);
+      logBlobUsage("render");
       return NextResponse.json({
         url: cached.data.url,
         cached: true,
@@ -82,8 +85,11 @@ export async function POST(req: Request) {
     console.log(
       `render ms=${routeMs()} cached=0 verified=0 format=${format.ext} avatar=${version}`,
     );
+    logBlobUsage("render");
     return NextResponse.json({ url: uploaded.url, cached: false, verified: false, invented: [] });
   } catch (err) {
+    logBlobUsage("render");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Render failed.";
     if (/content_policy_violation/i.test(message)) {
       console.log(`render error=content-policy route_ms=${routeMs()}`);

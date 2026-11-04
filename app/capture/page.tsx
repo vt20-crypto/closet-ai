@@ -23,6 +23,8 @@ interface QueueItem {
   status: "queued" | "uploading" | "ready" | "scanning" | "done" | "failed";
   photo?: Photo;
   error?: string;
+  /** Pieces found by the scan (set on Done). */
+  pieces?: number;
 }
 
 interface Photo {
@@ -235,6 +237,7 @@ export default function CapturePage() {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/photos", { cache: "no-store" });
+      if (!res.ok) return null;
       const body = (await res.json()) as { photos?: Photo[]; meta?: Record<string, PhotoMeta> };
       if (body.photos) setPhotos(body.photos);
       if (body.meta) setMeta(body.meta);
@@ -558,20 +561,22 @@ export default function CapturePage() {
     }
     if (uploadRef.current) uploadRef.current.value = "";
     const items: QueueItem[] = batch.map((file, index) => ({
-      id: `${Date.now()}-${index}`,
+      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
       file,
       name: file.name || `Photo ${index + 1}`,
       thumbUrl: URL.createObjectURL(file),
       status: "queued",
     }));
-    // The queue renders before any decode or upload runs.
-    setQueue(items);
+    // The queue renders before any decode or upload runs; batches append so a
+    // second pick never drops the first.
+    setQueue((prev) => [...prev, ...items]);
     setBusy(true);
     try {
       // Uploads run in order; a queued photo can still be cropped meanwhile.
+      // queueRef updates async, so fall back to the item itself (same tick).
       for (const item of items) {
-        const current = queueRef.current.find((entry) => entry.id === item.id);
-        if (!current || current.status !== "queued") continue;
+        const current = queueRef.current.find((entry) => entry.id === item.id) ?? item;
+        if (current.status !== "queued") continue;
         setQueueItem(item.id, { status: "uploading", error: undefined });
         try {
           const jpeg = await resizeToJpeg(current.file).catch(() => {
@@ -596,10 +601,16 @@ export default function CapturePage() {
           const entry = ready[index];
           if (!entry?.photo) continue;
           setQueueItem(entry.id, { status: "scanning", error: undefined });
-          await scanPhoto(entry.photo, `photo ${index + 1} of ${ready.length}`, undefined, false, true);
+          const found = await scanPhoto(entry.photo, `photo ${index + 1} of ${ready.length}`, undefined, false, true);
           const latest = await refresh();
+          const pieces = latest?.meta?.[entry.photo.pathname]?.candidateIds?.length ?? found;
           const done = !!latest?.meta?.[entry.photo.pathname];
-          setQueueItem(entry.id, done ? { status: "done" } : { status: "failed", error: "Scan failed." });
+          setQueueItem(
+            entry.id,
+            done
+              ? { status: "done", pieces }
+              : { status: "failed", error: "Scan failed." },
+          );
         }
       };
       await Promise.all([scanNext(), scanNext()]);
@@ -935,7 +946,7 @@ export default function CapturePage() {
               ? `Uploading ${queue.filter((entry) => ["ready", "scanning", "done", "failed"].includes(entry.status)).length + 1} of ${queue.length}…`
               : queue.some((entry) => entry.status === "scanning" || entry.status === "ready")
                 ? `Scanning ${queue.filter((entry) => entry.status === "done" || entry.status === "failed").length + 1} of ${queue.length}…`
-                : `Scanned ${queue.filter((entry) => entry.status === "done").length} of ${queue.length}.`}
+                : `Added ${queue.filter((entry) => entry.status === "done").length} of ${queue.length} photos.`}
           </p>
           <ul className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {queue.map((entry) => (
@@ -960,7 +971,9 @@ export default function CapturePage() {
                           ? "Uploaded."
                           : entry.status === "scanning"
                             ? "Scanning…"
-                            : "Done."}
+                            : entry.pieces !== undefined
+                              ? `Done (${entry.pieces} piece${entry.pieces === 1 ? "" : "s"} found).`
+                              : "Done."}
                 </p>
                 {entry.status === "queued" && (
                   <button

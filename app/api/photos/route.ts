@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { del, list } from "@vercel/blob";
 
+import { logBlobUsage } from "@/lib/blobStore";
 import {
   deletePhotoFamily,
   deletePhotoMeta,
   isPhotoPathname,
   listPhotoMeta,
 } from "@/lib/photos";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +16,7 @@ export async function GET() {
   try {
     const { blobs } = await list({ prefix: "photos/" });
     const meta = await listPhotoMeta();
+    logBlobUsage("photos");
     return NextResponse.json({
       photos: blobs
         .filter((blob) => /\.(jpe?g|png|webp)$/i.test(blob.pathname))
@@ -21,6 +24,10 @@ export async function GET() {
       meta,
     });
   } catch (err) {
+    logBlobUsage("photos");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
+    const status = (err as { statusCode?: number }).statusCode ?? 0;
+    if (status === 403) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Could not list photos.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

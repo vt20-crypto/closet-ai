@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { logBlobUsage } from "@/lib/blobStore";
 import { confirmCandidate, saveItem, type ClosetItem } from "@/lib/closet";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 import { flattenForTag } from "@/lib/cutout";
 import { tagGarment, untaggedFallback } from "@/lib/meta/spark";
 import { isPhotoPathname, recordKept } from "@/lib/photos";
@@ -50,8 +52,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: message, confirmed: items }, { status: 404 });
       }
     }
+    logBlobUsage("closet/confirm");
     return NextResponse.json({ items });
   } catch (err) {
+    logBlobUsage("closet/confirm");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Confirm failed.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

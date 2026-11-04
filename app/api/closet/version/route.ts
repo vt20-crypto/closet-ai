@@ -1,30 +1,24 @@
 import { NextResponse } from "next/server";
-import { list } from "@vercel/blob";
+
+import { logBlobUsage } from "@/lib/blobStore";
+import { getClosetVersion } from "@/lib/closet";
+import { isStorageUnavailable, storageUnavailableResponse } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Cheap closet fingerprint for the "closet changed" pill: the newest item
- * blob write plus the item count. Overwrites bump uploadedAt, so edits,
- * confirms and deletes all move the version without reading every JSON.
+ * Cheap closet fingerprint for the "closet changed" pill: newest item-blob
+ * write plus the item count. Served from an in-memory stamp (60s max);
+ * at most one list() per 60s even on a cold cache.
  */
 export async function GET() {
   try {
-    let cursor: string | undefined;
-    let stamp = "";
-    let count = 0;
-    do {
-      const page = await list({ prefix: "items/", cursor });
-      for (const blob of page.blobs) {
-        if (!blob.pathname.endsWith(".json")) continue;
-        count += 1;
-        const uploaded = new Date(blob.uploadedAt).toISOString();
-        if (uploaded > stamp) stamp = uploaded;
-      }
-      cursor = page.hasMore ? page.cursor : undefined;
-    } while (cursor);
-    return NextResponse.json({ stamp, count });
+    const version = await getClosetVersion();
+    logBlobUsage("closet/version");
+    return NextResponse.json(version);
   } catch (err) {
+    logBlobUsage("closet/version");
+    if (isStorageUnavailable(err)) return storageUnavailableResponse();
     const message = err instanceof Error ? err.message : "Version check failed.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
