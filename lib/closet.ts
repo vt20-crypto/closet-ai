@@ -23,6 +23,8 @@ export interface ClosetItem {
   /** Blob pathname of the source photo (absent on pre-scan-pipeline items). */
   photoPathname?: string;
   createdAt: string;
+  /** Last tag merge (e.g. the fit backfill); absent when never re-tagged. */
+  updatedAt?: string;
 }
 
 export function newId(): string {
@@ -86,12 +88,17 @@ export async function saveCandidate(item: CandidateItem): Promise<void> {
   });
 }
 
-/** Write a confirmed item. Never overwrites silently: ids are unique per keep. */
-export async function saveItem(item: ClosetItem): Promise<void> {
+/**
+ * Write a confirmed item. Never overwrites silently: ids are unique per
+ * keep, so callers rewriting an existing item (the fit backfill) must pass
+ * { allowOverwrite: true } explicitly.
+ */
+export async function saveItem(item: ClosetItem, opts?: { allowOverwrite?: boolean }): Promise<void> {
   await put(itemJson(item.id), JSON.stringify(item), {
     access: "public",
     contentType: "application/json",
     addRandomSuffix: false,
+    allowOverwrite: opts?.allowOverwrite ?? false,
   });
 }
 

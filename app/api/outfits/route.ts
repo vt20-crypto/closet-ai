@@ -7,7 +7,7 @@ import {
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
-import { fetchDressCode, pickOutfits } from "@/lib/meta/spark";
+import { fetchDressCode, styleRankOutfits } from "@/lib/meta/spark";
 import {
   countCoverage,
   coverageMissing,
@@ -15,9 +15,19 @@ import {
   slotForType,
   validateOutfits,
   type MissingCategory,
+  type RawOutfit,
 } from "@/lib/outfits";
-import { fallbackOutfits } from "@/lib/fallbackOutfits";
 import { applyScoreThreshold } from "@/lib/outfitScores";
+import {
+  generateCandidates,
+  pairAdjustments,
+  resolveOccasion,
+  ruleWeatherNote,
+  type LookVote,
+  type RuleItem,
+  type StyleContext,
+  type StyleProfile,
+} from "@/lib/styleRules";
 import { hashKey, readCache, writeCache } from "@/lib/cache";
 import { geocodeCity, getWeatherForDate, type WeatherSummary } from "@/lib/weather";
 
@@ -105,6 +115,20 @@ export async function POST(request: Request) {
     const latestCreatedAt = items.reduce((m, item) => (item.createdAt > m ? item.createdAt : m), "");
     const locKey =
       lat !== null && lon !== null ? `${lat.toFixed(2)},${lon.toFixed(2)}` : `city:${(city ?? "").toLowerCase()}`;
+    // Style profile + feedback shape the ranking, so they join the key.
+    const profile = await readCache<StyleProfile>("profile/style", Number.POSITIVE_INFINITY).then(
+      (r) => (r.hit && r.data && typeof r.data === "object" ? (r.data as StyleProfile) : {}),
+    );
+    const feedbackVotes = await readCache<LookVote[]>("feedback/looks", Number.POSITIVE_INFINITY).then(
+      (r) => (r.hit && Array.isArray(r.data) ? (r.data as LookVote[]) : []),
+    );
+    const profileHash = hashKey(
+      JSON.stringify({
+        style: profile.style ?? null,
+        undertone: profile.undertone ?? null,
+        strictness: profile.strictness ?? null,
+      }),
+    );
     const outfitCacheKey = `outfits/${hashKey(
       JSON.stringify({
         m: mood,
@@ -116,6 +140,8 @@ export async function POST(request: Request) {
         day: new Date().toISOString().slice(0, 10),
         when: dateISO,
         tod: timeOfDay,
+        p: profileHash,
+        f: feedbackVotes.length,
       }),
     )}`;
     interface CachedOutfit {
@@ -151,6 +177,10 @@ export async function POST(request: Request) {
     let source: "ai" | "rules" = "ai";
     let relaxed = false;
     let picked: CachedOutfit[] = [];
+    let combosGenerated = 0;
+    let afterFilters = 0;
+    let ruleRelaxed: string | null = null;
+    let topRuleScore = 0;
     const itemCards: Record<string, CachedItemCard> = {};
 
     const eligibleCached = cachedAll.filter((o) => !excludeKeys.has(o.key));
@@ -202,43 +232,120 @@ export async function POST(request: Request) {
       const weatherLine = weather
         ? `High ${weather.highC}°C, low ${weather.lowC}°C, ${weather.precipChancePct}% precipitation chance, wind ${weather.windKph} kph.`
         : null;
-      const closet = items.map((item) => ({
+      const whenLine =
+        dateISO || timeOfDay ? `${dateISO ?? "today"}${timeOfDay ? `, ${timeOfDay}` : ""}` : null;
+
+      // Deterministic styling engine: enumerate and score complete outfits
+      // in code, then let Spark rank the top candidates as final stylist.
+      const ruleItems: RuleItem[] = items.map((item) => ({
         id: item.id,
         type: item.tags.type,
         primary_color: item.tags.primary_color,
+        secondary_colors: item.tags.secondary_colors,
         formality: item.tags.formality,
         warmth: item.tags.warmth,
         layer: item.tags.layer,
+        fabric_weight: item.tags.fabric_weight,
+        pattern: item.tags.pattern,
+        nickname: item.tags.nickname ?? "",
+        distinguishing_note: item.tags.distinguishing_note,
+        fit: item.tags.fit,
+        length: item.tags.length,
+        sleeve: item.tags.sleeve,
+        rise: item.tags.rise,
       }));
-
-      const whenLine =
-        dateISO || timeOfDay ? `${dateISO ?? "today"}${timeOfDay ? `, ${timeOfDay}` : ""}` : null;
-      const baseInput = {
-        closet,
+      const styleCtx: StyleContext = {
+        items: ruleItems,
+        weather: weather
+          ? {
+              highC: weather.highC,
+              lowC: weather.lowC,
+              precipPct: weather.precipChancePct,
+              humidityPct: weather.humidityPct,
+            }
+          : { highC: 20, lowC: 14, precipPct: 0, humidityPct: 0 },
+        occasion: resolveOccasion(occasionChip, occasionText),
+        mood,
+        profile,
+        pairScores: pairAdjustments(feedbackVotes),
+        // No wear log exists yet; rotation scoring skips when empty.
+        wearDays: {},
+        seed: outfitCacheKey,
+      };
+      const { candidates, stats } = generateCandidates(styleCtx);
+      combosGenerated = stats.generated;
+      afterFilters = stats.afterFilters;
+      ruleRelaxed = stats.relaxed;
+      topRuleScore = stats.topScore;
+      console.log(
+        `outfits combos_generated=${stats.generated} sampled=${stats.sampled} ` +
+          `after_filters=${stats.afterFilters} rule_relaxed=${stats.relaxed ?? "none"} ` +
+          `top_rule=${stats.topScore.toFixed(2)}`,
+      );
+      // Already-shown combos never reach the model.
+      const unseen = candidates.filter((c) => !excludeKeys.has(c.id));
+      const candidateById = new Map(unseen.map((c) => [c.id, c]));
+      const byRuleId = new Map(ruleItems.map((item) => [item.id, item]));
+      const weatherNote = ruleWeatherNote(weather ? styleCtx.weather : null);
+      const rankInput = {
+        candidates: unseen.map((c) => ({
+          id: c.id,
+          ruleScore: Math.round(c.score * 100),
+          items: c.itemIds.map((id) => {
+            const it = byRuleId.get(id) as RuleItem;
+            return {
+              id,
+              nickname: it.nickname || `${it.primary_color} ${it.type}`,
+              type: it.type,
+              primary_color: it.primary_color,
+              formality: it.formality,
+              warmth: it.warmth,
+              layer: it.layer,
+              pattern: it.pattern,
+              fit: it.fit ?? "n/a",
+              length: it.length ?? "n/a",
+            };
+          }),
+        })),
         weatherLine,
         mood,
         occasion,
         destination,
         dressCodeNote: dressCode?.note ?? null,
         whenLine,
-        excludeKeys: [...excludeKeys],
         retryProblems: null as string | null,
         budget: pickBudget,
       };
 
       const tSpark = performance.now();
       try {
-        const raw = await pickOutfits(baseInput);
-        const { valid, problems } = validateOutfits({ items, raw, excludeKeys });
         let allValid: CachedOutfit[];
-        if (valid.length === 0 && raw.length > 0) {
-          const retryProblems = problems
-            .map((p) => `Outfit ${p.index + 1}: ${p.reasons.join("; ")}`)
-            .join(" | ");
-          const rawRetry = await pickOutfits({ ...baseInput, retryProblems });
-          allValid = validateOutfits({ items, raw: rawRetry, excludeKeys }).valid;
+        if (unseen.length === 0) {
+          // Every candidate was already shown; nothing new to rank.
+          allValid = [];
         } else {
-          allValid = valid;
+          const rankOnce = async (problems: string | null) => {
+            const picks = await styleRankOutfits({ ...rankInput, retryProblems: problems });
+            const raw: RawOutfit[] = picks.map((p) => {
+              const cand = candidateById.get(p.candidate_id);
+              return {
+                item_ids: cand ? [...cand.itemIds] : [],
+                reason: p.reason,
+                weather_note: weatherNote,
+                score: p.score,
+              };
+            });
+            return validateOutfits({ items, raw, excludeKeys });
+          };
+          const first = await rankOnce(null);
+          if (first.valid.length === 0 && unseen.length > 0) {
+            const retryProblems = first.problems
+              .map((p) => `Outfit ${p.index + 1}: ${p.reasons.join("; ")}`)
+              .join(" | ");
+            allValid = (await rankOnce(retryProblems)).valid;
+          } else {
+            allValid = first.valid;
+          }
         }
         const gate = applyScoreThreshold(allValid, threshold);
         picked = gate.picked;
@@ -274,29 +381,14 @@ export async function POST(request: Request) {
         // 400/401 and anything non-Meta throw to the 500 path as real errors.
         const outage = isOutageError(err);
         if (!outage) throw err;
-        console.log(`outfits pick failed, using rule fallback: ${(err as Error).message.slice(0, 120)}`);
-        const fbItems = items.map((item) => ({
-          id: item.id,
-          tags: {
-            type: item.tags.type,
-            primary_color: item.tags.primary_color,
-            formality: item.tags.formality,
-            warmth: item.tags.warmth,
-            layer: item.tags.layer,
-            pattern: item.tags.pattern,
-            nickname: item.tags.nickname ?? "",
-          },
+        console.log(`outfits rank failed, using rule fallback: ${(err as Error).message.slice(0, 120)}`);
+        // Top rule-scored unseen candidates with stylist-written reasons.
+        picked = unseen.slice(0, 3).map((c) => ({
+          item_ids: [...c.itemIds],
+          reason: c.reason,
+          weather_note: weatherNote,
+          key: c.id,
         }));
-        // Seed = request date + exclude count: each Shuffle surfaces new combos.
-        const ruleSeed = `${new Date().toISOString().slice(0, 10)}:${excludeKeys.size}`;
-        picked = fallbackOutfits(
-          fbItems,
-          weather ? { highC: weather.highC, lowC: weather.lowC } : { highC: 20, lowC: 14 },
-          mood,
-          occasionChip,
-          [...excludeKeys],
-          ruleSeed,
-        ).map((o) => ({ ...o, weather_note: "", key: outfitKey(o.item_ids) }));
         source = "rules";
       }
       sparkMs = Math.round(performance.now() - tSpark);
@@ -325,7 +417,9 @@ export async function POST(request: Request) {
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
       `outfits cache=${cacheStatus} weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
-        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source} when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
+        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source} ` +
+        `combos=${combosGenerated} filtered=${afterFilters} rule_relaxed=${ruleRelaxed ?? "none"} top_rule=${topRuleScore.toFixed(2)} ` +
+        `chosen=[${picked.map((o) => o.key).join(",")}] when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
     );
     return NextResponse.json({
       source,

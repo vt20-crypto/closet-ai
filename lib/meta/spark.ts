@@ -1,6 +1,5 @@
 import "server-only";
 
-import type { RawOutfit } from "../outfits";
 import type { DressState } from "../dress";
 import {
   candidateContext,
@@ -24,7 +23,7 @@ import {
   withModelFailover,
   type RetryBudget,
 } from "./retry";
-import { TAG_SCHEMA, type GarmentTags } from "./tagSchema";
+import { FIT_VALUES, LENGTH_VALUES, normalizeFitTags, RISE_VALUES, SLEEVE_VALUES, TAG_SCHEMA, type GarmentTags } from "./tagSchema";
 import type { InventedItem } from "../render";
 
 export type { GarmentTags };
@@ -38,7 +37,13 @@ const BASE_PROMPT =
   "rejection_reason (else null). Otherwise describe the garment. Formality and warmth are 1-5. " +
   "The distinguishing_note must name one visual detail that tells this item apart from similar ones. " +
   "The nickname is at most 2 words and 16 characters total, playful but accurate " +
-  "(e.g. 'Walkable', \"Daily Levi's\").";
+  "(e.g. 'Walkable', \"Daily Levi's\"). " +
+  "Also describe the cut with fit, length, sleeve and rise, using ONLY the listed values or n/a " +
+  "when the garment has no such axis (shoes and accessories are all n/a). Examples: men's " +
+  "straight-leg jeans are fit straight, length ankle, sleeve n/a, rise mid; an oversized hoodie is " +
+  "fit oversized, length regular, sleeve long, rise n/a; women's wrap midi dress is fit a-line, " +
+  "length midi, sleeve n/a, rise n/a; a cropped boxy tee is fit boxy, length cropped, sleeve short, " +
+  "rise n/a.";
 
 const PAIR_PROMPT =
   " This cutout may show a matched PAIR of shoes/boots side by side; if so, describe it as one " +
@@ -63,6 +68,10 @@ function rejected(reason: string): GarmentTags {
     seasons: [],
     distinguishing_note: "",
     nickname: "",
+    fit: "n/a",
+    length: "n/a",
+    sleeve: "n/a",
+    rise: "n/a",
   };
 }
 
@@ -176,17 +185,29 @@ function citationUrls(output: unknown): string[] {
   return urls;
 }
 
-export interface ClosetLine {
+export interface StyleRankCandidateItem {
   id: string;
+  nickname: string;
   type: string;
   primary_color: string;
   formality: number;
   warmth: number;
   layer: string;
+  pattern: string;
+  fit: string;
+  length: string;
 }
 
-export interface PickOutfitsInput {
-  closet: ClosetLine[];
+export interface StyleRankCandidate {
+  /** Candidate id (outfitKey of the sorted item ids). */
+  id: string;
+  /** Deterministic rule score 0-100 for calibration. */
+  ruleScore: number;
+  items: StyleRankCandidateItem[];
+}
+
+export interface StyleRankInput {
+  candidates: StyleRankCandidate[];
   weatherLine: string | null;
   mood: string | null;
   occasion: string | null;
@@ -194,90 +215,104 @@ export interface PickOutfitsInput {
   dressCodeNote: string | null;
   /** e.g. "tomorrow (2026-11-05), evening"; null for today, any time. */
   whenLine: string | null;
-  excludeKeys: string[];
   retryProblems: string | null;
   /** Shared per-request retry deadline (never past route maxDuration - 5s). */
   budget?: RetryBudget;
 }
 
-// Strict JSON schema for the outfit pick (no tools on this call).
-const OUTFIT_SCHEMA = {
+export interface RankedPick {
+  candidate_id: string;
+  score: number;
+  reason: string;
+}
+
+// Strict JSON schema for the stylist rank (no tools on this call).
+const STYLE_RANK_SCHEMA = {
   type: "object",
   properties: {
-    outfits: {
+    picks: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          item_ids: { type: "array", items: { type: "string" } },
-          reason: { type: "string" },
-          weather_note: { type: "string" },
+          candidate_id: { type: "string" },
           score: { type: "integer" },
+          reason: { type: "string" },
         },
-        required: ["item_ids", "reason", "weather_note", "score"],
+        required: ["candidate_id", "score", "reason"],
         additionalProperties: false,
       },
     },
   },
-  required: ["outfits"],
+  required: ["picks"],
   additionalProperties: false,
 } as const;
 
 /**
- * Pick up to 6 ranked outfits from the compact closet list. No tools on
- * this call. Returns the raw proposals; the route validates every id
- * server-side.
+ * Rank pre-styled candidates as a professional stylist. The candidates were
+ * generated and scored in code; Spark chooses among them by candidate id,
+ * ranks the best 6 and writes the reasons. The route maps ids back to item
+ * ids and validates everything server-side.
  */
-export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]> {
+export async function styleRankOutfits(input: StyleRankInput): Promise<RankedPick[]> {
   const api = getMetaClient();
-  const lines = input.closet
-    .map(
-      (c) =>
-        `${c.id} | ${c.type} | ${c.primary_color} | formality ${c.formality}/5 | warmth ${c.warmth}/5 | ${c.layer}`,
-    )
+  const lines = input.candidates
+    .map((c) => {
+      const pieces = c.items
+        .map(
+          (item) =>
+            `${item.nickname} (${item.primary_color} ${item.type}, fit ${item.fit}, length ${item.length}, formality ${item.formality}/5, warmth ${item.warmth}/5)`,
+        )
+        .join(" + ");
+      return `${c.id} [rules ${c.ruleScore}/100]: ${pieces}`;
+    })
     .join("\n");
   const parts = [
-    `Pick up to 6 outfits from this closet, best first (never pad with filler; fewer good outfits beat six bad ones). Use ONLY these item ids, exactly as written:`,
+    `You are a professional stylist. Choose ONLY from these pre-styled candidates, by candidate id exactly as written:`,
     lines,
-    input.weatherLine ? `Today's weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
+    input.weatherLine ? `Weather: ${input.weatherLine}.` : `No weather data; ignore weather.`,
     input.mood ? `Mood: ${input.mood}.` : `No mood given; pick something versatile.`,
     input.occasion ? `Occasion: ${input.occasion}.` : `No occasion given; pick everyday outfits.`,
   ];
   if (input.destination) parts.push(`Destination: ${input.destination}.`);
   if (input.dressCodeNote) parts.push(`Dress code to respect: ${input.dressCodeNote}`);
   if (input.whenLine) parts.push(`When: ${input.whenLine}.`);
-  if (input.excludeKeys.length > 0) {
-    parts.push(
-      `Do NOT repeat these already-shown combinations (sorted id sets): ${input.excludeKeys.join("; ")}.`,
-    );
-  }
   if (input.retryProblems) {
-    parts.push(`Your previous proposals were all invalid: ${input.retryProblems} Fix them.`);
+    parts.push(`Your previous ranking was unusable: ${input.retryProblems} Fix it.`);
   }
   parts.push(
-    `Each outfit must be complete: top+bottom or a dress, plus shoes if the closet has any. ` +
-      `Never use the same garment type twice except layered pieces. ` +
-      `weather_note is one line of clothing advice for the weather WITHOUT temperature numbers (numbers render separately). ` +
-      `reason is 20 words or fewer tying the outfit to the mood and occasion. ` +
-      `score is 1-10 for style + weather + occasion fit, best first.`,
+    `Rank the best 6 candidates, best first (never pad with filler; fewer good outfits beat six bad ones). ` +
+      `reason is one sentence, 20 words or fewer, in stylist language naming the actual pieces and why they work ` +
+      `(color, proportion, occasion, weather). score is 1-10 for style + weather + occasion fit.`,
   );
   // "minimal" is the shortest documented reasoning pass
   // (dev.meta.ai/docs/reasoning). The pick is latency-critical.
   // Failover: a dead id rotates immediately (no backoff); 429/5xx rethrow
   // to the route's outage mapping, exactly as before.
   const { result: res } = await withModelFailover(
-    "spark outfits",
+    "spark style-rank",
     (model) =>
       api.responses.create({
         model,
         reasoning: { effort: "minimal" },
         input: parts.join("\n"),
-        text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
+        text: { format: { type: "json_schema", name: "style_rank", strict: true, schema: STYLE_RANK_SCHEMA } },
       }),
     input.budget,
   );
-  const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
-  return Array.isArray(parsed.outfits) ? parsed.outfits.slice(0, 6) : [];
+  const parsed = JSON.parse(res.output_text ?? "") as { picks?: RankedPick[] };
+  if (!Array.isArray(parsed.picks)) return [];
+  return parsed.picks
+    .filter(
+      (pick): pick is RankedPick =>
+        typeof pick?.candidate_id === "string" && typeof pick?.reason === "string",
+    )
+    .map((pick) => ({
+      candidate_id: pick.candidate_id,
+      score: typeof pick.score === "number" ? Math.max(1, Math.min(10, Math.round(pick.score))) : 5,
+      reason: pick.reason,
+    }))
+    .slice(0, 6);
 }
 
 export interface VoiceSlots {
@@ -383,6 +418,10 @@ export function untaggedFallback(nouns: string[]): GarmentTags {
     seasons: [],
     distinguishing_note: "Kept without tags; tagging failed.",
     nickname: "",
+    fit: "n/a",
+    length: "n/a",
+    sleeve: "n/a",
+    rise: "n/a",
   };
 }
 
@@ -424,7 +463,10 @@ export async function tagGarment(
       });
       const text = res.output_text ?? "";
       console.log(`spark tag model_used=${model}`);
-      return { tags: JSON.parse(text) as GarmentTags, errored: false };
+      const tags = JSON.parse(text) as GarmentTags;
+      // Server-side fit validation: wrong-bucket values become "n/a".
+      const axes = normalizeFitTags(tags.type, tags.fit, tags.length, tags.sleeve, tags.rise);
+      return { tags: { ...tags, ...axes }, errored: false };
     } catch (err) {
       const status = (err as { status?: number })?.status;
       const message = err instanceof Error ? err.message : String(err);
@@ -453,6 +495,67 @@ export async function tagGarment(
     }
   }
   return { tags: rejected("tag_retries_exhausted"), errored: true };
+}
+
+const FIT_ONLY_SCHEMA = {
+  type: "object",
+  properties: {
+    fit: { type: "string", enum: [...FIT_VALUES] },
+    length: { type: "string", enum: [...LENGTH_VALUES] },
+    sleeve: { type: "string", enum: [...SLEEVE_VALUES] },
+    rise: { type: "string", enum: [...RISE_VALUES] },
+  },
+  required: ["fit", "length", "sleeve", "rise"],
+  additionalProperties: false,
+} as const;
+
+export interface FitTagResult {
+  fit: string;
+  length: string;
+  sleeve: string;
+  rise: string;
+}
+
+/**
+ * Fit-only re-tag for existing closet items (the backfill script and the
+ * retag route). Asks for the four cut axes only, then validates per type.
+ */
+export async function tagFit(
+  imageRef: string,
+  type: string,
+  budget?: RetryBudget,
+): Promise<FitTagResult> {
+  const { result: res } = await withModelFailover(
+    "spark tagfit",
+    (model) =>
+      getMetaClient().responses.create({
+        model,
+        reasoning: { effort: "minimal" },
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  `Describe ONLY the cut of this ${type} garment cutout with fit, length, sleeve ` +
+                  "and rise, using ONLY the listed values or n/a when the garment has no such axis " +
+                  "(shoes and accessories are all n/a). Examples: men's straight-leg jeans are fit " +
+                  "straight, length ankle, sleeve n/a, rise mid; an oversized hoodie is fit oversized, " +
+                  "length regular, sleeve long, rise n/a; women's wrap midi dress is fit a-line, " +
+                  "length midi, sleeve n/a, rise n/a.",
+              },
+              { type: "input_image", detail: "auto", image_url: imageRef },
+            ],
+          },
+        ],
+        text: { format: { type: "json_schema", name: "tagfit", strict: true, schema: FIT_ONLY_SCHEMA } },
+      }),
+    budget,
+  );
+  const parsed = JSON.parse(res.output_text ?? "") as Partial<FitTagResult>;
+  return normalizeFitTags(type, parsed.fit, parsed.length, parsed.sleeve, parsed.rise);
 }
 
 // --- Get-dressed agent ---

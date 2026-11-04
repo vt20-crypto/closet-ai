@@ -26,6 +26,8 @@ interface ClosetItem {
     distinguishing_note: string;
     /** Absent on items tagged before nicknames existed. */
     nickname?: string;
+    /** Absent on items tagged before fit details existed. */
+    fit?: string;
   };
 }
 
@@ -34,6 +36,7 @@ export default function ClosetPage() {
   const [status, setStatus] = useState("Loading your closet…");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [retagging, setRetagging] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +82,33 @@ export default function ClosetPage() {
     }
   }
 
+  /** Re-run the fit-only tagger on items tagged before fit details existed. */
+  async function retagFit() {
+    const stale = items.filter((item) => !item.tags.fit).length;
+    if (stale === 0 || retagging) return;
+    setRetagging(true);
+    setStatus(`Updating fit details on ${stale} item${stale === 1 ? "" : "s"}…`);
+    try {
+      const res = await fetch("/api/closet/retag-fit", { method: "POST" });
+      const body = (await res.json()) as { updated?: number; failed?: number; error?: string };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      setStatus(
+        `Updated ${body.updated ?? 0} item${(body.updated ?? 0) === 1 ? "" : "s"}` +
+          ((body.failed ?? 0) > 0 ? `, ${body.failed} failed.` : "."),
+      );
+      const fresh = await fetch("/api/closet", { cache: "no-store" });
+      const freshBody = (await fresh.json()) as { items?: ClosetItem[] };
+      if (fresh.ok && freshBody.items) setItems(freshBody.items);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Retag failed.";
+      setStatus(`Fit update failed: ${message}`);
+    } finally {
+      setRetagging(false);
+    }
+  }
+
+  const needsFit = items.some((item) => !item.tags.fit);
+
   const groups = new Map<string, ClosetItem[]>();
   for (const item of items) {
     const key = item.tags.type || "other";
@@ -93,6 +123,16 @@ export default function ClosetPage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
+      {needsFit && (
+        <button
+          type="button"
+          disabled={retagging}
+          onClick={() => void retagFit()}
+          className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+        >
+          {retagging ? "Updating fit details…" : "Update fit details"}
+        </button>
+      )}
       {[...groups.entries()].map(([type, group]) => (
         <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-3">
           <h2 className="font-display text-2xl capitalize">

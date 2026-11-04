@@ -192,6 +192,34 @@ export default function TodayPage() {
   const [depletedKey, setDepletedKey] = useState<string | null>(null);
   const [ranKey, setRanKey] = useState<string | null>(null);
   const [rulesNoteKey, setRulesNoteKey] = useState<string | null>(null);
+  /** Thumbs votes per outfit key; the next outfits call turns them into pair feedback. */
+  const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
+
+  async function vote(outfitKey: string, itemIds: string[], value: 1 | -1) {
+    const next = votes[outfitKey] === value ? 0 : value;
+    const prev = votes[outfitKey];
+    setVotes((current) => {
+      const updated = { ...current };
+      if (next === 0) delete updated[outfitKey];
+      else updated[outfitKey] = next;
+      return updated;
+    });
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outfitKey, itemIds, vote: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      setVotes((current) => {
+        const updated = { ...current };
+        if (prev === undefined) delete updated[outfitKey];
+        else updated[outfitKey] = prev;
+        return updated;
+      });
+    }
+  }
   const [voiceRequested, setVoiceRequested] = useState(false);
 
   // Stage: avatar spotlight for the selected look.
@@ -312,7 +340,6 @@ export default function TodayPage() {
     } catch {
       // Corrupt session: start fresh.
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -1309,6 +1336,34 @@ export default function TodayPage() {
                 </Link>
                 <p className="text-lg">{outfit.reason}</p>
                 {weather && <p className="text-(--text-muted)">{outfit.weather_note}</p>}
+                <div className="flex gap-3" role="group" aria-label={`Rate outfit ${index + 1}`}>
+                  <button
+                    type="button"
+                    aria-pressed={votes[outfit.key] === 1}
+                    aria-label={`Thumbs up for outfit ${index + 1}`}
+                    onClick={() => void vote(outfit.key, outfit.item_ids, 1)}
+                    className={`min-h-11 flex-1 rounded-full border px-4 text-base font-semibold ${
+                      votes[outfit.key] === 1
+                        ? "border-(--primary) bg-(--primary) text-(--primary-text)"
+                        : "border-(--border)"
+                    }`}
+                  >
+                    Loved it
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={votes[outfit.key] === -1}
+                    aria-label={`Thumbs down for outfit ${index + 1}`}
+                    onClick={() => void vote(outfit.key, outfit.item_ids, -1)}
+                    className={`min-h-11 flex-1 rounded-full border px-4 text-base font-semibold ${
+                      votes[outfit.key] === -1
+                        ? "border-(--primary) bg-(--primary) text-(--primary-text)"
+                        : "border-(--border)"
+                    }`}
+                  >
+                    Not for me
+                  </button>
+                </div>
               </article>
             );
           })}
