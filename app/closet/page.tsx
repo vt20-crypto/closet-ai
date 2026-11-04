@@ -93,8 +93,8 @@ export default function ClosetPage() {
       const body = (await res.json()) as { updated?: number; failed?: number; error?: string };
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
       setStatus(
-        `Updated ${body.updated ?? 0} item${(body.updated ?? 0) === 1 ? "" : "s"}` +
-          ((body.failed ?? 0) > 0 ? `, ${body.failed} failed.` : "."),
+        `Updated ${body.updated ?? 0} piece${(body.updated ?? 0) === 1 ? "" : "s"} — tap any item to review.` +
+          ((body.failed ?? 0) > 0 ? ` (${body.failed} failed.)` : ""),
       );
       const fresh = await fetch("/api/closet", { cache: "no-store" });
       const freshBody = (await fresh.json()) as { items?: ClosetItem[] };
@@ -124,14 +124,21 @@ export default function ClosetPage() {
         {status}
       </p>
       {needsFit && (
-        <button
-          type="button"
-          disabled={retagging}
-          onClick={() => void retagFit()}
-          className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
-        >
-          {retagging ? "Updating fit details…" : "Update fit details"}
-        </button>
+        <div className="flex flex-col items-start gap-2">
+          <button
+            type="button"
+            disabled={retagging}
+            onClick={() => void retagFit()}
+            className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+          >
+            {retagging ? "Detecting fit details…" : "Let AI fill in fit details"}
+          </button>
+          {!retagging && (
+            <p className="text-lg text-(--text-muted)">
+              Detects baggy, slim, cropped, high-rise… for each piece. You can edit any item.
+            </p>
+          )}
+        </div>
       )}
       {[...groups.entries()].map(([type, group]) => (
         <section key={type} aria-label={`${type} (${group.length})`} className="flex flex-col gap-3">

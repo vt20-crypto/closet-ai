@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  arrangeForPages,
   countCompleteOutfits,
   countCoverage,
   coverageMissing,
@@ -111,13 +112,101 @@ test("validateOutfits rejects a duplicated type without distinct layers", () => 
   assert.match(problems[0]?.reasons.join(";") ?? "", /twice without distinct layers/);
 });
 
-test("validateOutfits allows same type with distinct layers", () => {
-  const closet = [...CLOSET, item("t3", "sweater", "outer")];
+test("validateOutfits allows a mid layer over a listed base top", () => {
+  const closet = [...CLOSET, item("c1", "cardigan", "mid")];
   const { valid } = validateOutfits({
     items: closet,
-    raw: [{ item_ids: ["t2", "t3", "b1", "s1"], reason: "r", weather_note: "w" }],
+    raw: [{ item_ids: ["t1", "c1", "b1", "s1"], reason: "r", weather_note: "w" }],
   });
   assert.equal(valid.length, 1);
+});
+
+test("normalizeOutfitType maps button-down, oxford and flannel to top", () => {
+  assert.equal(normalizeOutfitType("button-down"), "top");
+  assert.equal(normalizeOutfitType("oxford shirt"), "top");
+  assert.equal(normalizeOutfitType("flannel"), "top");
+});
+
+test("validateOutfits rejects shirt+polo+shirt (exactly one base top)", () => {
+  const closet = [...CLOSET, item("t3", "shirt"), item("p1", "polo", "mid")];
+  const { valid, problems } = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["t1", "t3", "p1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(valid.length, 0);
+  assert.match(problems[0]?.reasons.join(";") ?? "", /exactly one base top/);
+});
+
+test("validateOutfits accepts tee + cardigan + jacket", () => {
+  const closet = [...CLOSET, item("c1", "cardigan", "mid"), item("j1", "jacket", "outer")];
+  const { valid } = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["t1", "c1", "j1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(valid.length, 1);
+});
+
+test("validateOutfits rejects a mid layer over a sweater base", () => {
+  const closet = [...CLOSET, item("c1", "cardigan", "mid")];
+  const { valid, problems } = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["t2", "c1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(valid.length, 0);
+  assert.match(problems[0]?.reasons.join(";") ?? "", /tee, tank, shirt, polo or turtleneck/);
+});
+
+test("a shirt tagged as outer still counts as a top, never an outer", () => {
+  const closet = [...CLOSET, item("sh1", "shirt", "outer"), item("j1", "jacket", "outer")];
+  const bad = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["t1", "sh1", "j1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(bad.valid.length, 0);
+  const good = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["t1", "j1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(good.valid.length, 1);
+});
+
+test("validateOutfits rejects a top worn with a dress", () => {
+  const { valid, problems } = validateOutfits({
+    items: CLOSET,
+    raw: [{ item_ids: ["d1", "t1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(valid.length, 0);
+  assert.match(problems[0]?.reasons.join(";") ?? "", /dress/);
+});
+
+test("arrangeForPages interleaves a repeated bottom", () => {
+  const closet = [...CLOSET, item("b2", "chinos"), item("t3", "polo")];
+  const raw = [
+    { item_ids: ["t1", "b1", "s1"], reason: "r", weather_note: "w" },
+    { item_ids: ["t2", "b1", "s1"], reason: "r", weather_note: "w" },
+    { item_ids: ["t3", "b2", "s1"], reason: "r", weather_note: "w" },
+  ];
+  const { valid } = validateOutfits({ items: closet, raw });
+  assert.equal(valid.length, 3);
+  const arranged = arrangeForPages(valid, closet);
+  assert.deepEqual(
+    arranged.map((o) => o.key),
+    ["b1|s1|t1", "b2|s1|t3", "b1|s1|t2"],
+  );
+});
+
+test("arrangeForPages keeps an already-diverse order", () => {
+  const closet = [...CLOSET, item("b2", "chinos"), item("t3", "polo")];
+  const raw = [
+    { item_ids: ["t1", "b1", "s1"], reason: "r", weather_note: "w" },
+    { item_ids: ["t3", "b2", "s1"], reason: "r", weather_note: "w" },
+  ];
+  const { valid } = validateOutfits({ items: closet, raw });
+  const arranged = arrangeForPages(valid, closet);
+  assert.deepEqual(
+    arranged.map((o) => o.key),
+    ["b1|s1|t1", "b2|s1|t3"],
+  );
 });
 
 test("validateOutfits rejects already-shown combinations", () => {

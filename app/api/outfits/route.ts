@@ -9,6 +9,7 @@ import {
 } from "@/lib/meta/retry";
 import { fetchDressCode, styleRankOutfits } from "@/lib/meta/spark";
 import {
+  arrangeForPages,
   countCoverage,
   coverageMissing,
   outfitKey,
@@ -103,7 +104,9 @@ export async function POST(request: Request) {
     const lat = cleanNumber(body.lat);
     const lon = cleanNumber(body.lon);
     const city = cleanText(body.city);
-    const venue = destination ?? occasionText;
+    // Dress-code lookup runs only for a typed venue/destination, never for
+    // occasion text alone.
+    const venue = destination;
     // Separate budgets so dress can never starve the pick. Date.now-based:
     // sleepWithinBudget compares against Date.now(), so a performance.now()
     // value here would silently disable every retry.
@@ -193,7 +196,8 @@ export async function POST(request: Request) {
       // Score gate: strong outfits first; relaxes to the top 2 at/above 5
       // so the result is never empty when valid outfits exist.
       const gate = applyScoreThreshold(eligibleCached, threshold);
-      picked = gate.picked;
+      // Page order: spread repeated pieces across the 3 looks when possible.
+      picked = arrangeForPages(gate.picked, items);
       relaxed = gate.relaxed;
       weather = cached.data.weather;
       dressCode = cached.data.dressCode;
@@ -282,11 +286,42 @@ export async function POST(request: Request) {
           `after_filters=${stats.afterFilters} rule_relaxed=${stats.relaxed ?? "none"} ` +
           `top_rule=${stats.topScore.toFixed(2)}`,
       );
-      // Already-shown combos never reach the model.
-      const unseen = candidates.filter((c) => !excludeKeys.has(c.id));
-      const candidateById = new Map(unseen.map((c) => [c.id, c]));
-      const byRuleId = new Map(ruleItems.map((item) => [item.id, item]));
       const weatherNote = ruleWeatherNote(weather ? styleCtx.weather : null);
+      // Rule candidates go through the same validator as model picks: an
+      // engine structure bug must surface in the logs, never on the user.
+      const checked = validateOutfits({
+        items,
+        raw: candidates.map((c) => ({
+          item_ids: [...c.itemIds],
+          reason: c.reason,
+          weather_note: weatherNote,
+          score: c.score,
+        })),
+      });
+      const ruleInvalid = candidates.length - checked.valid.length;
+      console.log(
+        `outfits combos_generated=${stats.generated} sampled=${stats.sampled} ` +
+          `after_filters=${stats.afterFilters} rule_relaxed=${stats.relaxed ?? "none"} ` +
+          `top_rule=${stats.topScore.toFixed(2)} rule_invalid=${ruleInvalid}`,
+      );
+      if (checked.problems.length > 0) {
+        console.log(
+          `outfits rule_invalid_sample=${checked.problems
+            .slice(0, 2)
+            .map((p) => p.reasons.join(";"))
+            .join(" | ")
+            .slice(0, 200)}`,
+        );
+      }
+      const candidateById = new Map(candidates.map((c) => [c.id, c]));
+      // Already-shown combos never reach the model.
+      const unseen: typeof candidates = [];
+      for (const v of checked.valid) {
+        if (excludeKeys.has(v.key)) continue;
+        const c = candidateById.get(v.key);
+        if (c) unseen.push(c);
+      }
+      const byRuleId = new Map(ruleItems.map((item) => [item.id, item]));
       const rankInput = {
         candidates: unseen.map((c) => ({
           id: c.id,
@@ -348,7 +383,8 @@ export async function POST(request: Request) {
           }
         }
         const gate = applyScoreThreshold(allValid, threshold);
-        picked = gate.picked;
+        // Page order: spread repeated pieces across the 3 looks when possible.
+        picked = arrangeForPages(gate.picked, items);
         relaxed = gate.relaxed;
         // Store full validated sets only (no excludes); requests with
         // excludes read+filter the cache but never overwrite it. The whole
@@ -415,11 +451,14 @@ export async function POST(request: Request) {
     const dressStatus = !venue || dressFailed ? "skipped" : dressSearched ? "searched" : "none";
 
     const totalMs = Math.round(performance.now() - tAll);
+    const pickedTypes = picked
+      .map((o) => o.item_ids.map((id) => itemCards[id]?.type ?? "?").join("+"))
+      .join(" ");
     console.log(
       `outfits cache=${cacheStatus} weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
         `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source} ` +
         `combos=${combosGenerated} filtered=${afterFilters} rule_relaxed=${ruleRelaxed ?? "none"} top_rule=${topRuleScore.toFixed(2)} ` +
-        `chosen=[${picked.map((o) => o.key).join(",")}] when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
+        `chosen=[${picked.map((o) => o.key).join(",")}] occasion=${occasion ?? "-"} mood=${mood ?? "-"} types=${pickedTypes} when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
     );
     return NextResponse.json({
       source,

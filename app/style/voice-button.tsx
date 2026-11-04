@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { rms, SilenceStopper } from "@/lib/micDetect";
 import { encodeWav, resampleLinear } from "@/lib/wav";
 import { stopSpeech, unlockSpeech } from "@/lib/speak";
 
@@ -29,7 +30,6 @@ interface VoiceButtonProps {
 type Phase = "idle" | "listening" | "working";
 
 const MAX_LISTEN_MS = 20_000;
-const SILENCE_PEAK = 0.02;
 
 interface Recording {
   stream: MediaStream;
@@ -38,18 +38,26 @@ interface Recording {
   proc: ScriptProcessorNode;
   chunks: Float32Array[];
   rate: number;
-  peak: number;
+  stopper: SilenceStopper;
   timer: number;
 }
 
 /**
  * Big talk/listen button. Records with getUserMedia + Web Audio (the
- * AudioContext is created inside the tap for iOS), resamples to 16 kHz mono,
- * encodes 16-bit PCM WAV in the browser, and POSTs it to /api/transcribe.
+ * AudioContext is created inside the tap for iOS), watches RMS block levels
+ * for speech, auto-stops after ~1.5s of trailing silence (tap stops sooner,
+ * 20s caps), resamples to 16 kHz mono, encodes 16-bit PCM WAV in the browser,
+ * and POSTs it to /api/transcribe.
  */
 export default function VoiceButton({ disabled, keywords, onResult, report, onActiveChange }: VoiceButtonProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const recRef = useRef<Recording | null>(null);
+  const ringRef = useRef<HTMLSpanElement | null>(null);
+  const reduceMotion = useRef(
+    typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
 
   // Mic open/close signal for hosts sharing hardware (camera + mic on iOS).
   function setActivePhase(next: Phase) {
@@ -82,7 +90,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
     } catch {
       // Already closed; the captured chunks are still usable.
     }
-    if (rec.peak < SILENCE_PEAK || rec.chunks.length === 0) {
+    if (!rec.stopper.speechDetected || rec.chunks.length === 0) {
       setActivePhase("idle");
       report("I didn't hear anything — try again.", true);
       return;
@@ -147,13 +155,20 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
       if (ctx.state === "suspended") await ctx.resume();
       const source = ctx.createMediaStreamSource(stream);
       const proc = ctx.createScriptProcessor(4096, 1, 1);
-      const rec: Recording = { stream, ctx, source, proc, chunks: [], rate: ctx.sampleRate, peak: 0, timer: 0 };
+      const rec: Recording = { stream, ctx, source, proc, chunks: [], rate: ctx.sampleRate, stopper: new SilenceStopper(), timer: 0 };
       proc.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
         rec.chunks.push(new Float32Array(input));
-        for (let i = 0; i < input.length; i++) {
-          const v = Math.abs(input[i]);
-          if (v > rec.peak) rec.peak = v;
+        const level = rms(input);
+        if (!reduceMotion.current && ringRef.current) {
+          const glow = Math.min(1, level / 0.06);
+          ringRef.current.style.opacity = String(0.25 + glow * 0.75);
+          ringRef.current.style.transform = `scale(${1 + glow * 0.35})`;
+        }
+        // ~1.5s of trailing silence ends the take; the tap and the 20s cap
+        // are the other two exits.
+        if (rec.stopper.push(level) === "stop") {
+          void finish();
         }
       };
       source.connect(proc);
@@ -174,21 +189,28 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => void toggle()}
-      disabled={disabled && phase === "idle"}
-      aria-pressed={phase === "listening"}
-      aria-label={phase === "listening" ? "Stop listening" : "Talk to plan your outfit"}
-      className={`flex min-h-16 items-center justify-center gap-3 rounded-full bg-(--primary) px-6 text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) ${
-        phase === "listening" ? "animate-mic-pulse" : ""
-      }`}
-    >
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-        <rect x="9" y="3" width="6" height="11" rx="3" />
-        <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-      </svg>
-      {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : "Tap to talk"}
-    </button>
+    <span className="relative inline-flex self-start">
+      <span
+        ref={ringRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 rounded-full border-2 border-(--primary) opacity-25"
+      />
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        disabled={disabled && phase === "idle"}
+        aria-pressed={phase === "listening"}
+        aria-label={phase === "listening" ? "Stop listening" : "Talk to plan your outfit"}
+        className={`relative flex min-h-16 items-center justify-center gap-3 rounded-full bg-(--primary) px-6 text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) ${
+          phase === "listening" ? "animate-mic-pulse" : ""
+        }`}
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+          <rect x="9" y="3" width="6" height="11" rx="3" />
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+        </svg>
+        {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : "Tap to talk"}
+      </button>
+    </span>
   );
 }

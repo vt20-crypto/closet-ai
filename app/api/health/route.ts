@@ -14,12 +14,27 @@ export const maxDuration = 30;
 
 const CACHE_TTL_MS = 60_000;
 
-let cache: { at: number; model: string; latencyMs: number } | null = null;
+let cache: { at: number; model: string; latencyMs: number; image: boolean } | null = null;
+
+async function imageAvailable(): Promise<boolean> {
+  try {
+    const list = await getMetaClient().models.list();
+    return list.data.some((model) => model.id === "muse-image-1.0");
+  } catch {
+    return false;
+  }
+}
 
 export async function GET(request: Request) {
   const fresh = new URL(request.url).searchParams.get("fresh") === "1";
   if (!fresh && cache && Date.now() - cache.at < CACHE_TTL_MS) {
-    return NextResponse.json({ ok: true, model: cache.model, latencyMs: cache.latencyMs, cached: true });
+    return NextResponse.json({
+      ok: true,
+      model: cache.model,
+      latencyMs: cache.latencyMs,
+      image: cache.image,
+      cached: true,
+    });
   }
   const started = performance.now();
   try {
@@ -40,8 +55,9 @@ export async function GET(request: Request) {
     if (!/^\s*ok\s*$/i.test(text)) {
       throw new Error(`Unexpected health reply: ${text.slice(0, 80)}`);
     }
-    cache = { at: Date.now(), model, latencyMs };
-    return NextResponse.json({ ok: true, model, latencyMs, cached: false });
+    const image = await imageAvailable();
+    cache = { at: Date.now(), model, latencyMs, image };
+    return NextResponse.json({ ok: true, model, latencyMs, image, cached: false });
   } catch (err) {
     // Failover exhaustion (503) and other outages become the hiccup, not a raw 500.
     if (isOutageError(err)) {

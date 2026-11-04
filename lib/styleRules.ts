@@ -1,6 +1,14 @@
 import { hashKey } from "./hash.ts";
 import { tapeLabel } from "./labels.ts";
-import { normalizeOutfitType, outfitKey } from "./outfits.ts";
+import {
+  isBaseTopType,
+  isLayerType,
+  isMidLayerType,
+  isOuterType,
+  midAllowedOver,
+  normalizeOutfitType,
+  outfitKey,
+} from "./outfits.ts";
 
 /**
  * Deterministic styling engine: enumerates complete outfits from the closet,
@@ -291,11 +299,11 @@ function haystack(item: RuleItem): string {
 export function failsWeather(items: RuleItem[], weather: StyleWeather): string | null {
   if (warmthDistance(items, weather.highC) >= 3) return "warmth outside the band";
   const heavyCoat = items.some(
-    (item) => item.layer === "outer" && item.warmth >= 4 && weather.highC > 24,
+    (item) => isOuterType(item.type) && item.warmth >= 4 && weather.highC > 24,
   );
   if (heavyCoat) return "heavy coat above 24C";
   const needsOuter = weather.lowC < COLD_LOW_C || weather.precipPct >= RAIN_PCT;
-  if (needsOuter && !items.some((item) => item.layer === "outer")) {
+  if (needsOuter && !items.some((item) => isOuterType(item.type))) {
     return "no outer layer for cold or rain";
   }
   if (weather.precipPct >= RAIN_PCT) {
@@ -316,7 +324,7 @@ export function failsWeather(items: RuleItem[], weather: StyleWeather): string |
 
 /** Hard formality filter: spread (outerwear excluded) over 2, or items 2+ outside the range. */
 export function failsFormality(items: RuleItem[], range: [number, number]): string | null {
-  const core = items.filter((item) => item.layer !== "outer");
+  const core = items.filter((item) => !isOuterType(item.type));
   const levels = core.map((item) => item.formality);
   if (levels.length > 1 && Math.max(...levels) - Math.min(...levels) > 2) {
     return "formality spread over 2";
@@ -403,36 +411,38 @@ function* enumerateBases(
   byId: Map<string, RuleItem>,
 ): Generator<string[]> {
   const shoeOptions: (string | null)[] = shoes.length > 0 ? shoes.map((s) => s.id) : [null];
-  const bases: string[][] = [];
+  // Dress bases take no mid layer; top bases take one only over a plain base.
+  const bases: Array<{ ids: string[]; topType: string | null }> = [];
   for (const top of tops) {
     for (const bottom of bottoms) {
       for (const shoe of shoeOptions) {
-        bases.push([top.id, bottom.id, ...(shoe ? [shoe] : [])]);
+        bases.push({ ids: [top.id, bottom.id, ...(shoe ? [shoe] : [])], topType: top.type });
       }
     }
   }
   for (const dress of dresses) {
     for (const shoe of shoeOptions) {
-      bases.push([dress.id, ...(shoe ? [shoe] : [])]);
+      bases.push({ ids: [dress.id, ...(shoe ? [shoe] : [])], topType: null });
     }
   }
   for (const base of bases) {
-    yield base;
+    yield base.ids;
     if (!layering) continue;
-    const baseSet = new Set(base);
+    const baseSet = new Set(base.ids);
+    const midOk = base.topType !== null && midAllowedOver(base.topType);
     for (const mid of mids) {
-      if (baseSet.has(mid.id)) continue;
-      const withMid = [...base, mid.id];
+      if (!midOk || baseSet.has(mid.id)) continue;
+      const withMid = [...base.ids, mid.id];
       if (!typeClash(withMid, byId)) yield withMid;
       for (const outer of outers) {
         if (baseSet.has(outer.id) || outer.id === mid.id) continue;
-        const withBoth = [...base, mid.id, outer.id];
+        const withBoth = [...base.ids, mid.id, outer.id];
         if (!typeClash(withBoth, byId)) yield withBoth;
       }
     }
     for (const outer of outers) {
       if (baseSet.has(outer.id)) continue;
-      const withOuter = [...base, outer.id];
+      const withOuter = [...base.ids, outer.id];
       if (!typeClash(withOuter, byId)) yield withOuter;
     }
   }
@@ -461,7 +471,7 @@ function filtersForLevel(level: number): ActiveFilters {
 }
 
 function failsSpread(items: RuleItem[], spread: number): string | null {
-  const core = items.filter((item) => item.layer !== "outer").map((item) => item.formality);
+  const core = items.filter((item) => !isOuterType(item.type)).map((item) => item.formality);
   if (core.length > 1 && Math.max(...core) - Math.min(...core) > spread) {
     return "formality spread over the limit";
   }
@@ -564,7 +574,7 @@ export function scoreProportion(items: RuleItem[], stylePref: string | null): nu
   const tops = items.filter((item) => categoryOf(item) === "top");
   const bottoms = items.filter((item) => categoryOf(item) === "bottom");
   const dresses = items.filter((item) => categoryOf(item) === "dress");
-  const layers = items.filter((item) => item.layer === "mid" || item.layer === "outer");
+  const layers = items.filter((item) => isLayerType(item.type));
   const topAxes = tops.map(axisOf);
   const bottomAxes = bottoms.map(axisOf);
   const hasInfo =
@@ -831,7 +841,7 @@ export function ruleReason(items: RuleItem[], ctx: StyleContext): string {
   const top = items.find((item) => categoryOf(item) === "top");
   const bottom = items.find((item) => categoryOf(item) === "bottom");
   const dress = items.find((item) => categoryOf(item) === "dress");
-  const outer = items.find((item) => item.layer === "outer");
+  const outer = items.find((item) => isOuterType(item.type));
   const hues = nonShoeHues(items);
   const phrases: string[] = [];
 
@@ -928,8 +938,15 @@ function pairSignature(items: RuleItem[]): string {
   const top = items.find((item) => categoryOf(item) === "top");
   const bottom = items.find((item) => categoryOf(item) === "bottom");
   const dress = items.find((item) => categoryOf(item) === "dress");
-  if (top && bottom) return `${top.id}+${bottom.id}`;
-  if (dress) return dress.id;
+  // Layered variants are distinct looks: the same base with and without a
+  // cardigan must not knock each other out of the candidate list.
+  const layers = items
+    .filter((item) => isLayerType(item.type))
+    .map((item) => item.id)
+    .sort()
+    .join("+");
+  if (top && bottom) return `${top.id}+${bottom.id}|${layers}`;
+  if (dress) return `${dress.id}|${layers}`;
   return items.map((item) => item.id).sort().join("+");
 }
 
@@ -942,14 +959,16 @@ export function generateCandidates(ctx: StyleContext): { candidates: StyleCandid
   const byId = new Map(ctx.items.map((item) => [item.id, item]));
   const ofCategory = (category: string): RuleItem[] =>
     ctx.items.filter((item) => categoryOf(item) === category).sort((a, b) => (a.id < b.id ? -1 : 1));
-  const tops = ofCategory("top");
+  // Roles come from the garment type, never the layer tag: a shirt tagged
+  // "mid" stays a base top, and only true layering pieces become layers.
+  const byType = (fn: (type: string) => boolean): RuleItem[] =>
+    ctx.items.filter((item) => fn(item.type)).sort((a, b) => (a.id < b.id ? -1 : 1));
+  const tops = byType(isBaseTopType);
   const bottoms = ofCategory("bottom");
   const dresses = ofCategory("dress");
   const shoesList = ofCategory("shoes");
-  const mids = ctx.items.filter((item) => item.layer === "mid").sort((a, b) => (a.id < b.id ? -1 : 1));
-  const outers = ctx.items
-    .filter((item) => categoryOf(item) === "outer" || item.layer === "outer")
-    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const mids = byType(isMidLayerType);
+  const outers = byType(isOuterType);
   const range = OCCASION_RANGES[ctx.occasion];
   const layering = ctx.weather.lowC < 12 || ctx.weather.precipPct >= RAIN_PCT;
 
@@ -990,7 +1009,7 @@ export function generateCandidates(ctx: StyleContext): { candidates: StyleCandid
     .map((ids) => ({ ids, scored: scoreOutfit(resolve(ids), ctx, range) }))
     .sort((a, b) => b.scored.score - a.scored.score);
 
-  // Diversity: no two candidates share both top and bottom.
+  // Diversity: no two candidates share the same base plus the same layers.
   const seen = new Set<string>();
   const candidates: StyleCandidate[] = [];
   for (const entry of scored) {

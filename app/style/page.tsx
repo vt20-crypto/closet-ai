@@ -135,6 +135,8 @@ type StageRecord = {
   verified: boolean;
   invented: InventedItem[];
   note?: string;
+  /** Image service was down: flat-lay stands in, one quiet retry pending. */
+  outage?: boolean;
 };
 
 /** Store one record, dropping entries from older avatar versions. */
@@ -182,12 +184,19 @@ export default function TodayPage() {
   const [itemCards, setItemCards] = useState<Record<string, ItemCard>>({});
   const [weather, setWeather] = useState<WeatherView | null>(null);
   const [dressCode, setDressCode] = useState<DressCodeView | null>(null);
+  const [dressOpen, setDressOpen] = useState(false);
   const [missing, setMissing] = useState<string[]>([]);
   const [status, setStatus] = useState("Pick a mood and an occasion to get dressed.");
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
   const [heard, setHeard] = useState<string | null>(null);
+  /** Transcript awaiting one-tap accept (auto-accepts after 3s). */
+  const [pendingVoice, setPendingVoice] = useState<{ transcript: string; slots: VoiceSlots } | null>(null);
+  const [heardDraft, setHeardDraft] = useState("");
+  const pendingRef = useRef<{ transcript: string; slots: VoiceSlots } | null>(null);
+  const draftRef = useRef("");
+  const acceptTimer = useRef<number | null>(null);
   const [relaxed, setRelaxed] = useState(false);
   const [depletedKey, setDepletedKey] = useState<string | null>(null);
   const [ranKey, setRanKey] = useState<string | null>(null);
@@ -230,6 +239,24 @@ export default function TodayPage() {
   const [renders, setRenders] = useState<Record<string, StageRecord>>({});
   const rendersRef = useRef<Record<string, StageRecord>>({});
   rendersRef.current = renders;
+  const verifyLookRef = useRef<
+    | ((
+    outfit: OutfitView,
+    record: { url: string | null; verified: boolean },
+    version: string,
+  ) => Promise<void>)
+    | null
+  >(null);
+  /** One quiet 30s render retry per outage look; cleared on unmount. */
+  const retryTimers = useRef<number[]>([]);
+  const retriedKeys = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const timers = retryTimers.current;
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+      if (acceptTimer.current !== null) window.clearTimeout(acceptTimer.current);
+    };
+  }, []);
   const inflightRef = useRef<Set<string>>(new Set());
   const verifyInflightRef = useRef<Set<string>>(new Set());
   const touchX = useRef<number | null>(null);
@@ -409,14 +436,42 @@ export default function TodayPage() {
         };
         if (!res.ok) {
           if (body.code === "no-avatar") return "no-avatar";
-          const fallback = {
+          // Image outage: the flat-lay stands in with a calm note, and one
+          // quiet retry runs ~30s later. Never an error banner.
+          const outage = body.code === META_UNAVAILABLE_CODE;
+          const fallback: StageRecord = {
             url: null,
             verified: false,
-            invented: [] as InventedItem[],
-            note: "Couldn't render this look — showing the items.",
+            invented: [],
+            note: outage ? "Showing your pieces." : "Couldn't render this look — showing the items.",
+            ...(outage ? { outage: true as const } : {}),
           };
           const atVersion = avatar.version;
           setRenders((prev) => storeRender(prev, atVersion, key, fallback));
+          if (outage && !retriedKeys.current.has(key)) {
+            retriedKeys.current.add(key);
+            const timer = window.setTimeout(() => {
+              void (async () => {
+                // Only refire while the flat-lay stand-in is still current.
+                if (rendersRef.current[key]?.outage !== true) return;
+                try {
+                  const retry = await fetch("/api/render", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ itemIds: outfit.item_ids }),
+                  });
+                  const retryBody = (await retry.json()) as { url?: string | null };
+                  if (!retry.ok || !retryBody.url) return;
+                  const record: StageRecord = { url: retryBody.url, verified: false, invented: [] };
+                  setRenders((prev) => storeRender(prev, atVersion, key, record));
+                  await verifyLookRef.current?.(outfit, record, atVersion);
+                } catch {
+                  // The flat-lay stays; no error surfaces.
+                }
+              })();
+            }, 30_000);
+            retryTimers.current.push(timer);
+          }
           return fallback;
         }
         const record = {
@@ -488,6 +543,7 @@ export default function TodayPage() {
     },
     [],
   );
+  verifyLookRef.current = verifyLook;
 
   // Render every look on the page in parallel (at most 3), then verify each
   // in the background. The user never waits on verification.
@@ -763,6 +819,36 @@ export default function TodayPage() {
     if (speakIt) speak(message);
   }
 
+  function clearAcceptTimer() {
+    if (acceptTimer.current !== null) {
+      window.clearTimeout(acceptTimer.current);
+      acceptTimer.current = null;
+    }
+  }
+
+  function acceptVoice() {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    setPendingVoice(null);
+    clearAcceptTimer();
+    const text = draftRef.current.trim() || pending.transcript;
+    void applyVoice(text, pending.slots);
+  }
+
+  /** A fresh transcript waits for one tap (or 3s) so it can be edited first. */
+  function offerVoice(transcript: string, slots: VoiceSlots) {
+    pendingRef.current = { transcript, slots };
+    setPendingVoice({ transcript, slots });
+    draftRef.current = transcript;
+    setHeardDraft(transcript);
+    clearAcceptTimer();
+    acceptTimer.current = window.setTimeout(() => {
+      acceptTimer.current = null;
+      acceptVoice();
+    }, 3000);
+  }
+
   async function applyVoice(transcript: string, slots: VoiceSlots) {
     const matchChip = (value: string | null, list: readonly string[]): string | null => {
       if (!value) return null;
@@ -802,6 +888,26 @@ export default function TodayPage() {
       speakOutfit(run.outfits[0], run.outfits.length, run.items, run.weather, run.dressCode);
     }
   }
+
+  /** ASR bias words: chips + closet nicknames/colors + date words + city. */
+  const voiceKeywords = [
+    ...new Set(
+      [
+        ...MOODS,
+        ...OCCASIONS,
+        "tomorrow",
+        "tonight",
+        "weekend",
+        "birthday",
+        "wedding",
+        "interview",
+        ...Object.values(itemCards).flatMap((card) => [card.nickname ?? "", card.primary_color ?? ""]),
+        city,
+      ]
+        .map((word) => word.trim().toLowerCase())
+        .filter((word) => word.length > 0),
+    ),
+  ].slice(0, 50);
 
   const chipClass = (selected: boolean) =>
     `min-h-12 rounded-full border px-5 text-lg capitalize disabled:text-(--disabled-text) ${
@@ -950,14 +1056,41 @@ export default function TodayPage() {
 
       <VoiceButton
         disabled={busy || locating}
-        keywords={[...MOODS, ...OCCASIONS, "brunch", "birthday", "wedding", "interview"]}
-        onResult={(transcript, slots) => void applyVoice(transcript, slots)}
+        keywords={voiceKeywords}
+        onResult={(transcript, slots) => offerVoice(transcript, slots)}
         report={reportVoice}
       />
-      {heard && (
-        <p className="self-start">
-          <Tape label={`You said: ${heard}`} seedId="you-said" />
-        </p>
+      {pendingVoice ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-(--border) bg-(--surface) p-4">
+          <label className="flex flex-col gap-2 text-lg">
+            You said: (edit, then use it — or wait 3 seconds)
+            <input
+              type="text"
+              value={heardDraft}
+              onChange={(event) => {
+                draftRef.current = event.target.value;
+                setHeardDraft(event.target.value);
+                clearAcceptTimer();
+              }}
+              maxLength={200}
+              aria-label="Heard text, edit before accepting"
+              className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={acceptVoice}
+            className="min-h-14 rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
+          >
+            Use this
+          </button>
+        </div>
+      ) : (
+        heard && (
+          <p className="self-start">
+            <Tape label={`You said: ${heard}`} seedId="you-said" />
+          </p>
+        )
       )}
 
       {!canRun && !busy && (
@@ -1045,24 +1178,28 @@ export default function TodayPage() {
         </section>
       )}
 
-      {dressCode?.searched ? (
-        dressCode.note ? (
-          <p className="text-lg">
-            Dress code (searched): {dressCode.note}{" "}
-            {dressCode.url && (
-              <a
-                href={dressCode.url}
-                target="_blank"
-                rel="noreferrer"
-                className="underline"
-              >
-                Source
-              </a>
-            )}
-          </p>
-        ) : (
-          <p className="text-lg">No dress code found online.</p>
-        )
+      {dressCode?.note ? (
+        <div className="flex flex-col items-start gap-2">
+          <button
+            type="button"
+            aria-expanded={dressOpen}
+            aria-label={`Dress code: ${dressCode.note}. ${dressOpen ? "Hide" : "Show"} details.`}
+            onClick={() => setDressOpen((open) => !open)}
+            className="max-w-full min-h-11 rounded-full border border-(--border) px-4 py-2 text-left text-[15px]"
+          >
+            <span className="block truncate">Dress code: {dressCode.note}</span>
+          </button>
+          {dressOpen && (
+            <p className="text-lg">
+              {dressCode.note}{" "}
+              {dressCode.url && (
+                <a href={dressCode.url} target="_blank" rel="noreferrer" className="underline">
+                  Source
+                </a>
+              )}
+            </p>
+          )}
+        </div>
       ) : null}
 
       {page.length > 0 && avatar === null && (
@@ -1107,7 +1244,7 @@ export default function TodayPage() {
               <img
                 src={stagedRender.url}
                 alt={`Look ${stageIndex + 1} styled on your avatar`}
-                className="aspect-[2/3] w-full object-cover"
+                className="aspect-[2/3] w-full animate-stage-in object-cover"
               />
             ) : showItems || stagedRender ? (
               <ul className="grid grid-cols-2 gap-4 p-4" aria-label="Look garments, laid flat">

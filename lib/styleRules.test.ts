@@ -331,3 +331,47 @@ describe("ruleReason", () => {
     assert.ok(!/score|filter|warmth|formality|band|spread/i.test(reason), reason);
   });
 });
+
+describe("generateCandidates structure", () => {
+  const jeans = () => item({ id: "j", type: "jeans", warmth: 3, formality: 2 });
+  const shoes = () => item({ id: "s", type: "sneakers", warmth: 1, formality: 2 });
+  it("never emits two base tops, even when one is tagged as a mid layer", () => {
+    const tops = [
+      item({ id: "sh", type: "shirt", layer: "mid", warmth: 2, formality: 2 }),
+      item({ id: "po", type: "polo", warmth: 2, formality: 2 }),
+      item({ id: "te", type: "t-shirt", warmth: 2, formality: 2 }),
+    ];
+    const c = ctx({ items: [...tops, jeans(), shoes()], occasion: "casual" });
+    const { candidates } = generateCandidates(c);
+    assert.ok(candidates.length > 0);
+    const topIds = new Set(["sh", "po", "te"]);
+    for (const cand of candidates) {
+      const n = cand.itemIds.filter((id) => topIds.has(id)).length;
+      assert.equal(n, 1, `candidate ${cand.id} has ${n} base tops`);
+    }
+  });
+  it("layers a cardigan and jacket over a tee, never a shirt tagged as outer", () => {
+    const tee = item({ id: "te", type: "t-shirt", warmth: 2, formality: 2 });
+    const cardigan = item({ id: "ca", type: "cardigan", layer: "mid", warmth: 2, formality: 2 });
+    const jacket = item({ id: "ja", type: "jacket", layer: "outer", warmth: 3, formality: 2 });
+    const tagged = item({ id: "sh", type: "shirt", layer: "outer", warmth: 2, formality: 2 });
+    const c = ctx({
+      items: [tee, cardigan, jacket, tagged, jeans(), shoes()],
+      occasion: "casual",
+      weather: { highC: 18, lowC: 10, precipPct: 0, humidityPct: 40 },
+    });
+    const { candidates } = generateCandidates(c);
+    const full = candidates.find(
+      (cand) =>
+        cand.itemIds.includes("te") &&
+        cand.itemIds.includes("ca") &&
+        cand.itemIds.includes("ja"),
+    );
+    assert.ok(full, "expected a tee + cardigan + jacket candidate");
+    for (const cand of candidates) {
+      if (cand.itemIds.includes("sh")) {
+        assert.ok(!cand.itemIds.includes("te"), `tagged shirt shares a look with the tee: ${cand.id}`);
+      }
+    }
+  });
+});
