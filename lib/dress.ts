@@ -130,6 +130,37 @@ export function markUnavailable(state: DressState, itemId: string): DressState {
   return { ...state, unavailableIds: [...state.unavailableIds, itemId] };
 }
 
+export type LocalCommand = "repeat" | "back" | "skip" | "next";
+
+const COMMAND_WORDS: Record<string, LocalCommand> = {
+  repeat: "repeat",
+  again: "repeat",
+  back: "back",
+  previous: "back",
+  skip: "skip",
+  next: "next",
+};
+
+/**
+ * Whole-utterance local commands only: 1–3 words containing a command word
+ * ("back", "go back", "skip it"). Anything longer ("it's back in the
+ * laundry") goes to the replan agent — a bare word-boundary regex fires on
+ * words inside sentences.
+ */
+export function matchLocalCommand(transcript: string): LocalCommand | null {
+  const words = transcript
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0 || words.length > 3) return null;
+  for (const word of words) {
+    const command = COMMAND_WORDS[word];
+    if (command) return command;
+  }
+  return null;
+}
+
 export function finishDress(state: DressState): DressState {
   return { ...state, done: true };
 }

@@ -10,6 +10,7 @@ import {
   currentStep,
   finishDress,
   markUnavailable,
+  matchLocalCommand,
   orderSteps,
   skipStep,
   toDressItem,
@@ -153,5 +154,67 @@ describe("toDressItem", () => {
     assert.equal(item.slot, "other");
     assert.equal(item.layer, "base");
     assert.equal(item.nickname, "unknown other");
+  });
+});
+
+describe("voice session continuity", () => {
+  it("a voice swap at step 2 keeps step 1 done and stays on the swapped step", () => {
+    // Mid-session: step 1 done, working on step 2.
+    let state = createDressState(["tee", "jeans", "shoes"]);
+    state = advance(state);
+    assert.equal(currentStep(state)?.itemId, "jeans");
+    const swapped = applySwap(state, "jeans", "chinos");
+    assert.deepEqual(
+      swapped.steps.map((s) => s.status),
+      ["done", "todo", "todo"],
+    );
+    assert.equal(currentStep(swapped)?.itemId, "chinos");
+    assert.equal(swapped.index, 1);
+    assert.equal(swapped.done, false);
+  });
+
+  it("local repeat/back/skip never reset progress", () => {
+    let state = createDressState(["tee", "jeans", "shoes"]);
+    state = advance(state);
+    // repeat: same object shape, same index, statuses kept.
+    assert.equal(currentStep(state)?.itemId, "jeans");
+    assert.equal(state.steps[0].status, "done");
+    // back: returns to step 1 without clearing its done status.
+    const backed = backStep(state);
+    assert.equal(currentStep(backed)?.itemId, "tee");
+    assert.equal(backed.steps[0].status, "done");
+    assert.equal(backed.done, false);
+    // skipping step 2 marks jeans skipped and moves on; step 1 stays done.
+    const skipped = skipStep(state);
+    assert.deepEqual(
+      skipped.steps.map((s) => s.status),
+      ["done", "skipped", "todo"],
+    );
+    assert.equal(skipped.index, 2);
+  });
+});
+
+describe("matchLocalCommand", () => {
+  it("matches short whole utterances", () => {
+    assert.equal(matchLocalCommand("back"), "back");
+    assert.equal(matchLocalCommand("go back"), "back");
+    assert.equal(matchLocalCommand("previous"), "back");
+    assert.equal(matchLocalCommand("skip it"), "skip");
+    assert.equal(matchLocalCommand("next one"), "next");
+    assert.equal(matchLocalCommand("repeat that"), "repeat");
+    assert.equal(matchLocalCommand("once again!"), "repeat");
+  });
+
+  it("sends longer sentences to the replan agent", () => {
+    assert.equal(matchLocalCommand("it's back in the laundry"), null);
+    assert.equal(matchLocalCommand("my jeans are in the laundry"), null);
+    assert.equal(matchLocalCommand("too cold, skip the jacket please"), null);
+    assert.equal(matchLocalCommand("back"), "back");
+  });
+
+  it("ignores empty and command-free utterances", () => {
+    assert.equal(matchLocalCommand(""), null);
+    assert.equal(matchLocalCommand("  "), null);
+    assert.equal(matchLocalCommand("looking sharp"), null);
   });
 });

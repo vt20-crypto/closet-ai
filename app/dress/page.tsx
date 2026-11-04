@@ -12,6 +12,7 @@ import {
   backStep,
   createDressState,
   currentStep,
+  matchLocalCommand,
   orderSteps,
   skipStep,
   toDressItem,
@@ -39,7 +40,6 @@ interface TraceEntry {
 
 type Phase = "loading" | "need-outfit" | "ready" | "guiding" | "finished";
 
-const LOCAL_COMMANDS = /\b(repeat|back|skip|next)\b/i;
 const REPLAN_KEYWORDS = [
   "repeat",
   "back",
@@ -95,6 +95,10 @@ export default function DressPage() {
   const [skippedIds, setSkippedIds] = useState<string[]>([]);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraFailed, setCameraFailed] = useState(false);
+  /** Mic open right now: tap-to-check is ignored ("Listening…"). */
+  const [voiceActive, setVoiceActive] = useState(false);
+  /** A replan round-trip is in flight: tap-to-check is ignored ("Thinking…"). */
+  const [thinking, setThinking] = useState(false);
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -103,18 +107,35 @@ export default function DressPage() {
   const dressRef = useRef<DressState | null>(null);
   const itemsRef = useRef<Record<string, ClosetView>>({});
   const phaseRef = useRef<Phase>("loading");
+  const busyRef = useRef(false);
+  const voiceActiveRef = useRef(false);
+  const thinkingRef = useRef(false);
   dressRef.current = dress;
   itemsRef.current = items;
   phaseRef.current = phase;
 
-  // iOS can't reliably run the camera and the mic together: stop the camera
-  // tracks while recording, then resume the preview when the mic closes.
+  function setBusyState(on: boolean) {
+    busyRef.current = on;
+    setBusy(on);
+  }
+
+  function setThinkingState(on: boolean) {
+    thinkingRef.current = on;
+    setThinking(on);
+  }
+
+  // iOS can't reliably run the camera and the mic together: pause the camera
+  // while recording, then ALWAYS resume it when the mic closes (staying on
+  // the current step — this path never touches the dress state).
   function handleVoiceActive(active: boolean) {
+    voiceActiveRef.current = active;
+    setVoiceActive(active);
     if (active) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       setCameraReady(false);
     } else if (phaseRef.current === "guiding") {
+      console.log("dress camera resume after mic");
       void ensureCamera();
     }
   }
@@ -202,6 +223,48 @@ export default function DressPage() {
     setStatus("Outfit ready. Tap Start getting dressed, then tap anywhere to check each item.");
   }
 
+  /** Attach a live stream to the preview and wait for real frames. */
+  async function attachStream(stream: MediaStream): Promise<boolean> {
+    streamRef.current = stream;
+    try {
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+        // Wait until frames actually flow; a playing-but-empty stream
+        // snapshots black, so the tap target stays shut until ready.
+        const t0 = Date.now();
+        while (videoRef.current.readyState < 2 && Date.now() - t0 < 4000) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+      const ready =
+        !!streamRef.current && !!videoRef.current && videoRef.current.readyState >= 2;
+      setCameraReady(ready);
+      if (!ready) {
+        setCameraFailed(true);
+        console.log("dress camera error=no-frames");
+      }
+      return ready;
+    } catch (err) {
+      console.log(
+        `dress camera error=${err instanceof Error ? err.name : "unknown"} ${(err instanceof Error ? err.message : "").slice(0, 120)}`,
+      );
+      setCameraFailed(true);
+      return false;
+    }
+  }
+
+  function reportCameraFailure(err: unknown) {
+    const name = err instanceof Error ? err.name : "unknown";
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(`dress camera error=${name} ${message.slice(0, 120)}`);
+    setCameraFailed(true);
+    // The user tapped, so speak the recovery path eyes-free.
+    if (phaseRef.current === "guiding") {
+      say("The camera didn't start. Tap to allow the camera, or choose a photo instead.");
+    }
+  }
+
   async function ensureCamera(): Promise<boolean> {
     // No overlapping starts: a tap right after voice must not double-open.
     if (startingRef.current) return false;
@@ -220,32 +283,52 @@ export default function DressPage() {
         video: { facingMode: "environment" },
         audio: false,
       });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-        // Wait until frames actually flow; a playing-but-empty stream
-        // snapshots black, so the tap target stays shut until ready.
-        const t0 = Date.now();
-        while (videoRef.current.readyState < 2 && Date.now() - t0 < 4000) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-      }
-      const ready =
-        !!streamRef.current && !!videoRef.current && videoRef.current.readyState >= 2;
-      setCameraReady(ready);
-      if (!ready) setCameraFailed(true);
-      return ready;
-    } catch {
-      setCameraFailed(true);
+      return await attachStream(stream);
+    } catch (err) {
+      reportCameraFailure(err);
       return false;
     } finally {
       startingRef.current = false;
     }
   }
 
+  /**
+   * iOS Safari only grants the camera when getUserMedia is requested
+   * synchronously inside the tap — before any await, speech, or beep. This
+   * fires the request FIRST and attaches on resolve; everything else in the
+   * tap handler runs after this call returns.
+   */
+  function openCameraFromTap(): void {
+    if (startingRef.current) return;
+    if (streamRef.current) {
+      setCameraReady(true);
+      return;
+    }
+    startingRef.current = true;
+    setCameraFailed(false);
+    setStatus("Camera starting…");
+    if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
+      startingRef.current = false;
+      setCameraFailed(true);
+      return;
+    }
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: "environment" }, audio: false })
+      .then(
+        (stream) => {
+          startingRef.current = false;
+          void attachStream(stream);
+        },
+        (err: unknown) => {
+          startingRef.current = false;
+          reportCameraFailure(err);
+        },
+      );
+  }
+
   // After any transition into guiding, (re)attach once the preview element
-  // has mounted — startAgain relies on this (its own call would run first).
+  // has mounted — the mic-resume path relies on this when the video element
+  // is new (the tap paths open the camera synchronously themselves).
   useEffect(() => {
     if (phase === "guiding" && !streamRef.current) void ensureCamera();
   }, [phase]);
@@ -276,10 +359,12 @@ export default function DressPage() {
   }
 
   function startSession() {
+    // Camera first, synchronously in the tap: iOS Safari gates getUserMedia
+    // on the gesture, so speech/beep must wait until after this call.
+    openCameraFromTap();
     unlockSpeech();
     unlockBeep();
     beep();
-    void ensureCamera();
     const state = dressRef.current;
     if (!state) return;
     setPhase("guiding");
@@ -293,7 +378,7 @@ export default function DressPage() {
   async function checkBlob(blob: Blob, state: DressState) {
     const step = currentStep(state);
     if (!step) return;
-    setBusy(true);
+    setBusyState(true);
     setStatus("Checking what you're wearing…");
     try {
       const form = new FormData();
@@ -341,14 +426,14 @@ export default function DressPage() {
         say(`Couldn't check: ${message}`);
       }
     } finally {
-      setBusy(false);
+      setBusyState(false);
     }
   }
 
   function stopSession() {
     stopCamera();
     setTrace([]);
-    setBusy(false);
+    setBusyState(false);
     const state = dressRef.current;
     if (state) setDress(createDressState(state.steps.map((step) => step.itemId)));
     setPhase("ready");
@@ -369,6 +454,8 @@ export default function DressPage() {
   function startAgain() {
     const state = dressRef.current;
     if (!state) return;
+    // Same tap-gesture rule as Start: open the camera before anything else.
+    openCameraFromTap();
     unlockSpeech();
     unlockBeep();
     beep();
@@ -389,10 +476,22 @@ export default function DressPage() {
 
   async function tapToCheck() {
     const state = dressRef.current;
-    if (!state || busy || phase !== "guiding") return;
+    if (!state || phaseRef.current !== "guiding") return;
+    // No overlapping actions: listening and replanning own the session.
+    if (voiceActiveRef.current) {
+      setStatus("Listening…");
+      return;
+    }
+    if (busyRef.current) {
+      setStatus(thinkingRef.current ? "Thinking…" : "Checking…");
+      return;
+    }
     if (!cameraReady && !cameraFailed) return;
+    // Claim the session synchronously so a second tap can't double-check.
+    setBusyState(true);
     const photo = await snapPhoto();
     if (!photo) {
+      setBusyState(false);
       // No live camera: fall back to the capture picker.
       setStatus("Take a photo of what you're wearing.");
       fileRef.current?.click();
@@ -411,33 +510,52 @@ export default function DressPage() {
     }
   }
 
+  /** Eyes-free confirmation: what was heard, trimmed for speech. */
+  function heardLine(transcript: string): string {
+    const trimmed = transcript.trim();
+    return trimmed.length > 140 ? `${trimmed.slice(0, 140)}…` : trimmed;
+  }
+
   async function handleVoiceCommand(transcript: string) {
-    const state = dressRef.current;
-    if (!state || phase !== "guiding") return;
-    const match = transcript.toLowerCase().match(LOCAL_COMMANDS)?.[1]?.toLowerCase();
-    if (match === "repeat") {
-      say(guidanceFor(state, itemsRef.current));
+    const sent = dressRef.current;
+    if (!sent || phaseRef.current !== "guiding") return;
+    const trimmed = transcript.trim();
+    const heard = heardLine(trimmed);
+    const command = matchLocalCommand(trimmed);
+    if (command === "repeat") {
+      say(`Heard: ${heard}. ${guidanceFor(sent, itemsRef.current)}`);
       return;
     }
-    if (match === "back") {
-      const next = backStep(state);
+    if (command === "back") {
+      const next = backStep(sent);
       setDress(next);
       beep();
-      say(`Back one. ${guidanceFor(next, itemsRef.current)}`);
+      say(`Heard: ${heard}. Back one. ${guidanceFor(next, itemsRef.current)}`);
       return;
     }
-    if (match === "skip" || match === "next") {
-      afterLocalMove(skipStep(state), "Skipped.");
+    if (command === "skip" || command === "next") {
+      const next = skipStep(sent);
+      setDress(next);
+      beep();
+      if (next.done) {
+        finishSession(null);
+      } else {
+        say(`Heard: ${heard}. Skipped. ${guidanceFor(next, itemsRef.current)}`);
+      }
       return;
     }
-    // Anything else goes to the replan agent.
-    setBusy(true);
-    setStatus("Thinking…");
+    // Anything else goes to the replan agent. Overlaps are gated (tap and
+    // mic stay shut while busy), so the session can't move mid-round-trip;
+    // the identity check below is the safety net.
+    setBusyState(true);
+    setThinkingState(true);
+    setStatus(`Heard: "${trimmed}". Thinking…`);
+    speak(`Heard: ${heard}.`);
     try {
       const res = await fetch("/api/dress/replan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ state, transcript }),
+        body: JSON.stringify({ state: sent, transcript: trimmed }),
       });
       const body = (await res.json()) as {
         say?: string;
@@ -453,7 +571,14 @@ export default function DressPage() {
       // The agent only swaps within known ids; unknown steps would 400 above.
       const validated = body.state.steps.every((s) => itemsRef.current[s.itemId])
         ? body.state
-        : state;
+        : sent;
+      if (dressRef.current !== sent) {
+        // The session moved mid-round-trip (shouldn't happen with the gates):
+        // keep the live session rather than rewinding it.
+        console.log("dress replan discarded: session moved mid-round-trip");
+        say(`Let's keep going. ${guidanceFor(dressRef.current ?? validated, itemsRef.current)}`);
+        return;
+      }
       setDress(validated);
       setTrace(body.trace ?? []);
       beep();
@@ -472,7 +597,8 @@ export default function DressPage() {
           : message,
       );
     } finally {
-      setBusy(false);
+      setThinkingState(false);
+      setBusyState(false);
     }
   }
 
@@ -581,6 +707,8 @@ export default function DressPage() {
           <VoiceButton
             disabled={busy}
             keywords={START_KEYWORDS}
+            idleLabel="Talk to get dressed"
+            idleAriaLabel="Talk to get dressed, for example: help me get dressed for brunch"
             onActiveChange={handleVoiceActive}
             onResult={(transcript, slots) => void voiceStart(transcript, slots)}
             report={(message, speakIt) => {
@@ -628,16 +756,25 @@ export default function DressPage() {
         <>
           <button
             type="button"
-            disabled={busy || phase === "finished" || (phase === "guiding" && !cameraReady && !cameraFailed)}
+            disabled={
+              busy ||
+              voiceActive ||
+              phase === "finished" ||
+              (phase === "guiding" && !cameraReady && !cameraFailed)
+            }
             onClick={() => void tapToCheck()}
             aria-label={
               phase === "finished"
                 ? "Outfit complete"
-                : busy
-                  ? "Checking what you're wearing"
-                  : !cameraReady && !cameraFailed
-                    ? "Camera starting. Wait before tapping to check."
-                    : "Check this step. Tap to take a snapshot."
+                : voiceActive
+                  ? "Listening. Wait before tapping to check."
+                  : busy
+                    ? thinking
+                      ? "Thinking through your change"
+                      : "Checking what you're wearing"
+                    : !cameraReady && !cameraFailed
+                      ? "Camera starting. Wait before tapping to check."
+                      : "Check this step. Tap to take a snapshot."
             }
             className="flex min-h-[40dvh] flex-1 flex-col justify-center gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-6 text-left shadow-[0_10px_24px_var(--shadow)]"
           >
@@ -651,21 +788,36 @@ export default function DressPage() {
             <span className="text-lg text-(--text-muted)">
               {phase === "finished"
                 ? "Outfit complete."
-                : busy
-                  ? "Checking…"
-                  : cameraFailed
-                    ? "Tap to choose a photo of this item."
-                    : cameraReady
-                      ? "Tap anywhere to check this item."
-                      : "Camera starting…"}
+                : voiceActive
+                  ? "Listening…"
+                  : busy
+                    ? thinking
+                      ? "Thinking…"
+                      : "Checking…"
+                    : cameraFailed
+                      ? "Tap to choose a photo of this item."
+                      : cameraReady
+                        ? "Tap anywhere to check this item."
+                        : "Camera starting…"}
             </span>
           </button>
+          {phase === "guiding" && cameraFailed && (
+            <button
+              type="button"
+              onClick={openCameraFromTap}
+              className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold"
+            >
+              Tap to allow the camera
+            </button>
+          )}
 
           {phase === "guiding" && (
             <div className="flex flex-wrap items-center gap-3">
               <VoiceButton
                 disabled={busy}
                 keywords={REPLAN_KEYWORDS}
+                idleLabel="Talk to change the plan"
+                idleAriaLabel="Talk to change the plan, for example: my jeans are in the laundry"
                 onActiveChange={handleVoiceActive}
                 onResult={(transcript) => void handleVoiceCommand(transcript)}
                 report={(message, speakIt) => {

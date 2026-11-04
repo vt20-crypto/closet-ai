@@ -25,6 +25,10 @@ interface VoiceButtonProps {
   report: (message: string, speakIt?: boolean) => void;
   /** Fires when the mic opens/closes so the host can yield shared hardware. */
   onActiveChange?: (active: boolean) => void;
+  /** Idle label; defaults to the Style page wording. */
+  idleLabel?: string;
+  /** Idle aria-label; defaults to the Style page wording. */
+  idleAriaLabel?: string;
 }
 
 type Phase = "idle" | "listening" | "working";
@@ -49,7 +53,15 @@ interface Recording {
  * 20s caps), resamples to 16 kHz mono, encodes 16-bit PCM WAV in the browser,
  * and POSTs it to /api/transcribe.
  */
-export default function VoiceButton({ disabled, keywords, onResult, report, onActiveChange }: VoiceButtonProps) {
+export default function VoiceButton({
+  disabled,
+  keywords,
+  onResult,
+  report,
+  onActiveChange,
+  idleLabel = "Tell me about your day",
+  idleAriaLabel = "Talk to plan your outfit",
+}: VoiceButtonProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const recRef = useRef<Recording | null>(null);
   const ringRef = useRef<HTMLSpanElement | null>(null);
@@ -200,7 +212,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
         onClick={() => void toggle()}
         disabled={disabled && phase === "idle"}
         aria-pressed={phase === "listening"}
-        aria-label={phase === "listening" ? "Stop listening" : "Tell me about your day"}
+        aria-label={phase === "listening" ? "Stop listening" : idleAriaLabel}
         className={`relative flex min-h-16 w-full items-center justify-center gap-3 rounded-full bg-(--primary) px-6 text-xl font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text) ${
           phase === "listening" ? "animate-mic-pulse" : ""
         }`}
@@ -209,7 +221,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
           <rect x="9" y="3" width="6" height="11" rx="3" />
           <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
         </svg>
-        {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : "Tell me about your day"}
+        {phase === "listening" ? "Listening… tap to stop" : phase === "working" ? "Transcribing…" : idleLabel}
       </button>
     </span>
   );
