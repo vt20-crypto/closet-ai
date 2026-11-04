@@ -103,6 +103,76 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Spark model failover chain (each id verified live with strict json_schema,
+ * input_image, and function tools). On a 404 whose message mentions the
+ * model, that id is dead: move to the next id immediately with NO backoff
+ * and mark it dead for 90s (in-memory circuit breaker). 429/5xx are
+ * untouched by this rule — callers keep their own backoff on the same id.
+ */
+export const SPARK_MODELS = ["muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1", "muse-wonder-1.0"];
+export const MODEL_BREAKER_MS = 90_000;
+
+const modelDeadUntil = new Map<string, number>();
+
+/** Test seam: clear all breaker marks. */
+export function resetModelBreaker(): void {
+  modelDeadUntil.clear();
+}
+
+export function isModelDead(model: string, now: number = Date.now()): boolean {
+  const until = modelDeadUntil.get(model);
+  if (until === undefined) return false;
+  if (now >= until) {
+    modelDeadUntil.delete(model);
+    return false;
+  }
+  return true;
+}
+
+export function markModelDead(model: string, now: number = Date.now()): void {
+  modelDeadUntil.set(model, now + MODEL_BREAKER_MS);
+}
+
+/**
+ * Run fn against the failover chain, skipping breaker-dead ids. Returns the
+ * result with the id that answered (log it as model_used). 404-model rotates
+ * immediately; anything else — 429/5xx included — rethrows to the caller.
+ * Strict-JSON replies may carry whitespace; JSON.parse handles that normally.
+ */
+export async function withModelFailover<T>(
+  context: string,
+  fn: (model: string) => Promise<T>,
+  budget?: RetryBudget,
+  now: () => number = Date.now,
+): Promise<{ result: T; model: string }> {
+  let lastErr: unknown = null;
+  const tried = new Set<string>();
+  for (;;) {
+    if (budget && now() > budget.deadline) {
+      throw lastErr ?? new Error(`${context}: retry budget exhausted with no live spark model`);
+    }
+    const next = SPARK_MODELS.find((m) => !tried.has(m) && !isModelDead(m, now()));
+    if (!next) {
+      throw lastErr ?? new Error(`${context}: no live spark model (all ids tried or breaker-dead)`);
+    }
+    try {
+      const result = await fn(next);
+      console.log(`${context} model_used=${next}`);
+      return { result, model: next };
+    } catch (err) {
+      if (isTransientModel404(err)) {
+        markModelDead(next, now());
+        tried.add(next);
+        lastErr = err;
+        console.log(`${context} model_dead=${next} failing over (breaker ${MODEL_BREAKER_MS / 1000}s)`);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** Persistent per-call 404 counter shared by every Meta call path. */
 export interface ModelRetryCounters {
   retries404: number;

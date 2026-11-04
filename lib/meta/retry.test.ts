@@ -3,10 +3,16 @@ import assert from "node:assert/strict";
 
 import {
   createRetryBudget,
+  isModelDead,
   isTransientModel404,
+  markModelDead,
+  MODEL_BREAKER_MS,
   model404RetryDelayMs,
+  resetModelBreaker,
   sleepForTransient404,
   sleepWithinBudget,
+  SPARK_MODELS,
+  withModelFailover,
   withTransient404Retry,
   type ModelRetryCounters,
 } from "./retry.ts";
@@ -207,4 +213,87 @@ test("shared branch returns false for non-transient errors without sleeping", as
   );
   assert.equal(counters.retries404, 0);
   assert.ok(Date.now() - started < 200);
+});
+
+test("failover rotates past dead ids immediately to the first live model", async () => {
+  resetModelBreaker();
+  const tried: string[] = [];
+  const started = Date.now();
+  const out = await withModelFailover("test", async (model) => {
+    tried.push(model);
+    if (model !== "muse-spark-1.1") throw apiError(404, "404 The requested model was not found");
+    return "ok";
+  });
+  assert.equal(out.result, "ok");
+  assert.equal(out.model, "muse-spark-1.1");
+  assert.deepEqual(tried, ["muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1"]);
+  // No backoff sleeps on the dead ids: two rotations happen in well under 1s.
+  assert.ok(Date.now() - started < 900);
+  assert.equal(isModelDead("muse-spark-1.3"), true);
+  assert.equal(isModelDead("muse-spark-1.2"), true);
+  assert.equal(isModelDead("muse-spark-1.1"), false);
+});
+
+test("breaker skips dead ids and releases them after 90s", async () => {
+  resetModelBreaker();
+  markModelDead("muse-spark-1.3");
+  const tried: string[] = [];
+  const out = await withModelFailover("test", async (model) => {
+    tried.push(model);
+    return "ok";
+  });
+  assert.equal(out.model, "muse-spark-1.2");
+  assert.deepEqual(tried, ["muse-spark-1.2"]);
+  assert.equal(isModelDead("muse-spark-1.3"), true);
+  assert.equal(isModelDead("muse-spark-1.3", Date.now() + MODEL_BREAKER_MS + 1000), false);
+  assert.deepEqual(SPARK_MODELS, ["muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1", "muse-wonder-1.0"]);
+});
+
+test("failover rethrows 429/5xx and non-model 404s without marking ids dead", async () => {
+  for (const err of [
+    apiError(429, "429 rate limited"),
+    apiError(500, "500 inference failed"),
+    apiError(404, "404 Not Found"),
+  ]) {
+    resetModelBreaker();
+    let calls = 0;
+    await assert.rejects(
+      withModelFailover("test", async () => {
+        calls += 1;
+        throw err;
+      }),
+      (thrown: unknown) => thrown === err,
+    );
+    assert.equal(calls, 1);
+    for (const model of SPARK_MODELS) assert.equal(isModelDead(model), false);
+  }
+});
+
+test("failover throws when every id is tried or breaker-dead", async () => {
+  resetModelBreaker();
+  for (const model of SPARK_MODELS) markModelDead(model);
+  let calls = 0;
+  await assert.rejects(
+    withModelFailover("test", async () => {
+      calls += 1;
+      return "ok";
+    }),
+  );
+  assert.equal(calls, 0);
+});
+
+test("failover respects a spent budget without calling", async () => {
+  resetModelBreaker();
+  let calls = 0;
+  await assert.rejects(
+    withModelFailover(
+      "test",
+      async () => {
+        calls += 1;
+        return "ok";
+      },
+      createRetryBudget(Date.now() + 30_000 - 60_000),
+    ),
+  );
+  assert.equal(calls, 0);
 });

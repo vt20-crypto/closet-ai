@@ -20,6 +20,8 @@ interface VoiceButtonProps {
   onResult: (transcript: string, slots: VoiceSlots) => void;
   /** Status line; speakIt also reads it aloud (errors). */
   report: (message: string, speakIt?: boolean) => void;
+  /** Fires when the mic opens/closes so the host can yield shared hardware. */
+  onActiveChange?: (active: boolean) => void;
 }
 
 type Phase = "idle" | "listening" | "working";
@@ -43,9 +45,15 @@ interface Recording {
  * AudioContext is created inside the tap for iOS), resamples to 16 kHz mono,
  * encodes 16-bit PCM WAV in the browser, and POSTs it to /api/transcribe.
  */
-export default function VoiceButton({ disabled, keywords, onResult, report }: VoiceButtonProps) {
+export default function VoiceButton({ disabled, keywords, onResult, report, onActiveChange }: VoiceButtonProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const recRef = useRef<Recording | null>(null);
+
+  // Mic open/close signal for hosts sharing hardware (camera + mic on iOS).
+  function setActivePhase(next: Phase) {
+    setPhase(next);
+    onActiveChange?.(next === "listening");
+  }
 
   // Stop any in-flight recording on unmount; never leave the mic open.
   useEffect(() => {
@@ -73,11 +81,11 @@ export default function VoiceButton({ disabled, keywords, onResult, report }: Vo
       // Already closed; the captured chunks are still usable.
     }
     if (rec.peak < SILENCE_PEAK || rec.chunks.length === 0) {
-      setPhase("idle");
+      setActivePhase("idle");
       report("I didn't hear anything — try again.", true);
       return;
     }
-    setPhase("working");
+    setActivePhase("working");
     report("Transcribing…");
     try {
       const total = rec.chunks.reduce((n, c) => n + c.length, 0);
@@ -99,10 +107,10 @@ export default function VoiceButton({ disabled, keywords, onResult, report }: Vo
         error?: string;
       };
       if (!res.ok || !body.transcript) throw new Error(body.error ?? `HTTP ${res.status}`);
-      setPhase("idle");
+      setActivePhase("idle");
       onResult(body.transcript, body.slots ?? { mood: null, occasion: null, occasion_text: null, destination: null, city: null });
     } catch (err) {
-      setPhase("idle");
+      setActivePhase("idle");
       const message = err instanceof Error ? err.message : "Transcription failed.";
       report(`Couldn't transcribe: ${message}`, true);
     }
@@ -150,9 +158,9 @@ export default function VoiceButton({ disabled, keywords, onResult, report }: Vo
       proc.connect(ctx.destination);
       rec.timer = window.setTimeout(() => void finish(), MAX_LISTEN_MS);
       recRef.current = rec;
-      setPhase("listening");
+      setActivePhase("listening");
     } catch (err) {
-      setPhase("idle");
+      setActivePhase("idle");
       const denied = err instanceof Error && err.name === "NotAllowedError";
       report(
         denied

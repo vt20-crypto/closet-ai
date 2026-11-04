@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { getMetaClient } from "@/lib/meta/client";
-import { createRetryBudget, withTransient404Retry } from "@/lib/meta/retry";
+import { createRetryBudget, withModelFailover } from "@/lib/meta/retry";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MODEL = "muse-spark-1.3";
 const CACHE_TTL_MS = 60_000;
 
 let cache: { at: number; model: string; latencyMs: number } | null = null;
@@ -18,15 +17,14 @@ export async function GET(request: Request) {
   }
   const started = performance.now();
   try {
-    const response = await withTransient404Retry(
+    const { result: response, model } = await withModelFailover(
       "health",
-      () =>
+      (model) =>
         getMetaClient().responses.create({
-          model: MODEL,
+          model,
           reasoning: { effort: "low" },
           input: "Reply with the single word: ok",
         }),
-      undefined,
       // Date.now-based: sleepWithinBudget compares against Date.now(), so a
       // performance.now() value here would silently disable every retry.
       createRetryBudget(Date.now() + 15_000),
@@ -36,8 +34,8 @@ export async function GET(request: Request) {
     if (!/^\s*ok\s*$/i.test(text)) {
       throw new Error(`Unexpected health reply: ${text.slice(0, 80)}`);
     }
-    cache = { at: Date.now(), model: MODEL, latencyMs };
-    return NextResponse.json({ ok: true, model: MODEL, latencyMs, cached: false });
+    cache = { at: Date.now(), model, latencyMs };
+    return NextResponse.json({ ok: true, model, latencyMs, cached: false });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Health check failed.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });

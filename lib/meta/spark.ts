@@ -16,18 +16,19 @@ import {
 import { getMetaClient } from "./client";
 import { hashKey, readCache, writeCache } from "../cache";
 import {
+  isModelDead,
   isTransientModel404,
-  sleepForTransient404,
+  markModelDead,
+  SPARK_MODELS,
   sleepWithinBudget,
-  withTransient404Retry,
-  type ModelRetryCounters,
+  withModelFailover,
   type RetryBudget,
 } from "./retry";
 import { TAG_SCHEMA, type GarmentTags } from "./tagSchema";
 
 export type { GarmentTags };
 
-const MODEL = "muse-spark-1.3";
+
 
 const BASE_PROMPT =
   "This is a garment cutout on a transparent background (checkerboard = transparent, ignore it). " +
@@ -101,45 +102,52 @@ export async function fetchDressCode(
   console.log(`dress cache=${cached.hit ? "hit" : "miss"}`);
   if (cached.hit && cached.data) return cached.data;
   const api = getMetaClient();
-  // Own policy, separate from the pick: a 404 (outage signature) skips dress
-  // immediately so it can never starve the pick; 429/5xx get one retry.
+  // Own policy, separate from the pick: a dead id fails over immediately so
+  // dress can never starve the pick; 429/5xx get one retry on the same id.
   // Any failure returns null so the caller skips the dress note.
-  let retried = false;
-  for (;;) {
-    try {
-      const res = await api.responses.create(
-        {
-          model: MODEL,
-          reasoning: { effort: "low" },
-          tools: [{ type: "web_search" }],
-          input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
-        },
-        { timeout: 10_000, maxRetries: 0 },
-      );
-      const note = (res.output_text ?? "").trim();
-      const urls = citationUrls(res.output);
-      const out = { note: note || null, url: urls[0] ?? null, citations: urls.length };
-      if (out.note) await writeCache(cachePath, out);
-      return out;
-    } catch (err) {
-      if (isTransientModel404(err)) return null;
-      const status = (err as { status?: number })?.status;
-      const retryable = status === 429 || (typeof status === "number" && status >= 500);
-      if (retryable && !retried) {
-        retried = true;
-        const raw = (err as { headers?: unknown })?.headers;
-        const headerValue =
-          raw && typeof (raw as Headers).get === "function"
-            ? (raw as Headers).get("retry-after")
-            : null;
-        const secs = headerValue ? Number(headerValue) : NaN;
-        const delay = Number.isFinite(secs) ? Math.max(0, secs * 1000) : 1000;
-        if (budget && !(await sleepWithinBudget(delay, budget))) return null;
-        if (!budget) await sleep(delay);
-        continue;
-      }
-      return null;
-    }
+  try {
+    const { result: res } = await withModelFailover(
+      "spark dress",
+      async (model) => {
+        let retried = false;
+        for (;;) {
+          try {
+            return await api.responses.create(
+              {
+                model,
+                reasoning: { effort: "low" },
+                tools: [{ type: "web_search" }],
+                input: `What is the dress code for "${venue}"? Answer in exactly one sentence.`,
+              },
+              { timeout: 10_000, maxRetries: 0 },
+            );
+          } catch (err) {
+            if (isTransientModel404(err)) throw err;
+            const status = (err as { status?: number })?.status;
+            const retryable = status === 429 || (typeof status === "number" && status >= 500);
+            if (!retryable || retried) throw err;
+            retried = true;
+            const raw = (err as { headers?: unknown })?.headers;
+            const headerValue =
+              raw && typeof (raw as Headers).get === "function"
+                ? (raw as Headers).get("retry-after")
+                : null;
+            const secs = headerValue ? Number(headerValue) : NaN;
+            const delay = Number.isFinite(secs) ? Math.max(0, secs * 1000) : 1000;
+            if (budget && !(await sleepWithinBudget(delay, budget))) throw err;
+            if (!budget) await sleep(delay);
+          }
+        }
+      },
+      budget,
+    );
+    const note = (res.output_text ?? "").trim();
+    const urls = citationUrls(res.output);
+    const out = { note: note || null, url: urls[0] ?? null, citations: urls.length };
+    if (out.note) await writeCache(cachePath, out);
+    return out;
+  } catch {
+    return null;
   }
 }
 
@@ -251,16 +259,17 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   );
   // "minimal" is the shortest documented reasoning pass
   // (dev.meta.ai/docs/reasoning). The pick is latency-critical.
-  const res = await withTransient404Retry(
+  // Failover: a dead id rotates immediately (no backoff); 429/5xx rethrow
+  // to the route's outage mapping, exactly as before.
+  const { result: res } = await withModelFailover(
     "spark outfits",
-    () =>
+    (model) =>
       api.responses.create({
-        model: MODEL,
+        model,
         reasoning: { effort: "minimal" },
         input: parts.join("\n"),
         text: { format: { type: "json_schema", name: "outfits", strict: true, schema: OUTFIT_SCHEMA } },
       }),
-    undefined,
     input.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as { outfits?: RawOutfit[] };
@@ -308,16 +317,15 @@ export async function parseVoiceSlots(
     `destination is a named venue or place; city is where they are or are going. ` +
     `Transcript: ${JSON.stringify(transcript.slice(0, 500))}`;
   const started = Date.now();
-  const res = await withTransient404Retry(
+  const { result: res } = await withModelFailover(
     "spark voice",
-    () =>
+    (model) =>
       api.responses.create({
-        model: MODEL,
+        model,
         reasoning: { effort: "minimal" },
         input: prompt,
         text: { format: { type: "json_schema", name: "voice_slots", strict: true, schema: VOICE_SCHEMA } },
       }),
-    undefined,
     opts?.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as Partial<VoiceSlots>;
@@ -378,15 +386,17 @@ export async function tagGarment(
 ): Promise<TagResult> {
   const api = getMetaClient();
   const prompt = opts?.isPair ? BASE_PROMPT + PAIR_PROMPT : BASE_PROMPT;
-  const retryCounters: ModelRetryCounters = { retries404: 0 };
   let retriesBackoff = 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
+    // Failover: skip breaker-dead ids; a 404 rotates immediately below.
+    const model = SPARK_MODELS.find((m) => !isModelDead(m));
+    if (!model) break;
     try {
       // "minimal" is the shortest documented reasoning pass
       // (dev.meta.ai/docs/reasoning); "none" 400s on Spark. Tagging is a
       // narrow classification call, so it gets the cheapest effort.
       const res = await api.responses.create({
-        model: MODEL,
+        model,
         reasoning: { effort: "minimal" },
         input: [
           {
@@ -401,6 +411,7 @@ export async function tagGarment(
         text: { format: { type: "json_schema", name: "tag", strict: true, schema: TAG_SCHEMA } },
       });
       const text = res.output_text ?? "";
+      console.log(`spark tag model_used=${model}`);
       return { tags: JSON.parse(text) as GarmentTags, errored: false };
     } catch (err) {
       const status = (err as { status?: number })?.status;
@@ -409,18 +420,10 @@ export async function tagGarment(
         return { tags: rejected("content_policy_violation"), errored: false };
       }
       if (isTransientModel404(err)) {
-        // Shared branch with every other Meta call path (see retry.ts).
-        if (
-          await sleepForTransient404({
-            context: "spark tag",
-            err,
-            counters: retryCounters,
-            budget: opts?.budget,
-          })
-        ) {
-          continue;
-        }
-        return { tags: rejected(`tag_error: ${message.slice(0, 120)}`), errored: true };
+        // Dead id: mark it for 90s and rotate immediately, no backoff.
+        markModelDead(model);
+        console.log(`spark tag model_dead=${model} failing over`);
+        continue;
       }
       if (status === 429 && retriesBackoff < 3) {
         const headers = (err as { headers?: unknown })?.headers;
@@ -516,11 +519,11 @@ export async function checkSnapshot(input: DressCheckInput): Promise<DressCheckR
     detail: "auto" as const,
     image_url: c.cutoutUrl,
   }));
-  const res = await withTransient404Retry(
+  const { result: res } = await withModelFailover(
     "spark dress check",
-    () =>
+    (model) =>
       api.responses.create({
-        model: MODEL,
+        model,
         // Accuracy over speed: look-alike tell-aparts are the demo moment.
         reasoning: { effort: "low" },
         input: [
@@ -540,7 +543,6 @@ export async function checkSnapshot(input: DressCheckInput): Promise<DressCheckR
         ],
         text: { format: { type: "json_schema", name: "dress_check", strict: true, schema: CHECK_SCHEMA } },
       }),
-    undefined,
     input.budget,
   );
   const parsed = JSON.parse(res.output_text ?? "") as Partial<DressCheckResult>;
@@ -598,19 +600,23 @@ export async function replanOutfit(input: ReplanInput): Promise<ReplanOutcome> {
     `mark_unavailable(item_id) for laundry/lost items; finish when they say done or the outfit is complete. ` +
     `Never invent item ids. Reply to the user in at most 2 short sentences (spoken aloud).`;
   let previousResponseId: string | undefined;
+  let chainModel: string | undefined;
   const callTurn = async (
     outputs?: Array<{ callId: string; output: string }>,
   ): Promise<{ turn: AgentTurn; responseId: string }> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res: any = await withTransient404Retry(
+    const { result: res }: { result: any } = await withModelFailover(
       "spark dress replan",
-      () =>
-        api.responses.create({
-          model: MODEL,
-          reasoning: { effort: "low" },
-          tools,
-          ...(previousResponseId
+      async (model) => {
+        // previous_response_id chains are model-specific: a failover to a
+        // new id restarts the turn with the prompt plus tool results so far.
+        const chained = !!previousResponseId && model === chainModel;
+        const response = await api.responses.create(
+          chained
             ? {
+                model,
+                reasoning: { effort: "low" },
+                tools,
                 previous_response_id: previousResponseId,
                 input: (outputs ?? []).map((o) => ({
                   type: "function_call_output",
@@ -618,9 +624,21 @@ export async function replanOutfit(input: ReplanInput): Promise<ReplanOutcome> {
                   output: o.output,
                 })),
               }
-            : { input: systemPrompt }),
-        }),
-      undefined,
+            : {
+                model,
+                reasoning: { effort: "low" },
+                tools,
+                input:
+                  systemPrompt +
+                  ((outputs ?? []).length > 0
+                    ? `\nTool results so far: ${JSON.stringify(outputs)}. Continue the replan.`
+                    : ""),
+              },
+        );
+        chainModel = model;
+        previousResponseId = response.id as string;
+        return response as unknown;
+      },
       input.budget,
     );
     previousResponseId = res.id as string;

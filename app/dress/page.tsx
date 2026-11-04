@@ -95,8 +95,21 @@ export default function DressPage() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const dressRef = useRef<DressState | null>(null);
   const itemsRef = useRef<Record<string, ClosetView>>({});
+  const phaseRef = useRef<Phase>("loading");
   dressRef.current = dress;
   itemsRef.current = items;
+  phaseRef.current = phase;
+
+  // iOS can't reliably run the camera and the mic together: stop the camera
+  // tracks while recording, then resume the preview when the mic closes.
+  function handleVoiceActive(active: boolean) {
+    if (active) {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    } else if (phaseRef.current === "guiding") {
+      void ensureCamera();
+    }
+  }
 
   function say(text: string) {
     setStatus(text);
@@ -290,6 +303,40 @@ export default function DressPage() {
     }
   }
 
+  function stopSession() {
+    stopCamera();
+    setTrace([]);
+    setBusy(false);
+    const state = dressRef.current;
+    if (state) setDress(createDressState(state.steps.map((step) => step.itemId)));
+    setPhase("ready");
+    setStatus("Stopped. Tap Start getting dressed to begin again, or pick another outfit below.");
+  }
+
+  function pickAnother() {
+    stopCamera();
+    setDress(null);
+    setTrace([]);
+    setSkippedIds([]);
+    setBusy(false);
+    setPhase("need-outfit");
+    setStatus("Tell me the occasion and I'll pick an outfit to dress you in.");
+  }
+
+  function startAgain() {
+    const state = dressRef.current;
+    if (!state) return;
+    unlockSpeech();
+    unlockBeep();
+    beep();
+    const fresh = createDressState(state.steps.map((step) => step.itemId));
+    setDress(fresh);
+    setTrace([]);
+    setPhase("guiding");
+    void ensureCamera();
+    say(guidanceFor(fresh, itemsRef.current));
+  }
+
   function finishSession(compliment: string | null) {
     stopCamera();
     setPhase("finished");
@@ -469,6 +516,7 @@ export default function DressPage() {
           <VoiceButton
             disabled={busy}
             keywords={START_KEYWORDS}
+            onActiveChange={handleVoiceActive}
             onResult={(transcript, slots) => void voiceStart(transcript, slots)}
             report={(message, speakIt) => {
               setStatus(message);
@@ -500,6 +548,13 @@ export default function DressPage() {
             className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text)"
           >
             Start getting dressed
+          </button>
+          <button
+            type="button"
+            onClick={pickAnother}
+            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
+          >
+            Pick another outfit
           </button>
         </section>
       )}
@@ -540,6 +595,7 @@ export default function DressPage() {
               <VoiceButton
                 disabled={busy}
                 keywords={REPLAN_KEYWORDS}
+                onActiveChange={handleVoiceActive}
                 onResult={(transcript) => void handleVoiceCommand(transcript)}
                 report={(message, speakIt) => {
                   setStatus(message);
@@ -571,6 +627,14 @@ export default function DressPage() {
                 className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
               >
                 Back
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={stopSession}
+                className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
+              >
+                Stop
               </button>
             </div>
           )}
@@ -610,6 +674,22 @@ export default function DressPage() {
                   );
                 })}
               </ul>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={startAgain}
+                  className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text)"
+                >
+                  Start again
+                </button>
+                <button
+                  type="button"
+                  onClick={pickAnother}
+                  className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
+                >
+                  Pick another outfit
+                </button>
+              </div>
               <Link href="/today" className="text-lg underline">
                 Back to Today
               </Link>
