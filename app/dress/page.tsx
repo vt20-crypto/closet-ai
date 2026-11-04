@@ -545,7 +545,12 @@ export default function DressPage() {
         aria-hidden="true"
         tabIndex={-1}
         onChange={(event) => {
-          const file = event.target.files?.[0];
+          const files = event.target.files;
+          // Single-photo only: extras are ignored.
+          if (files && files.length > 1) {
+            setStatus("One photo at a time - added the first one.");
+          }
+          const file = files?.[0];
           event.target.value = "";
           const state = dressRef.current;
           if (file && state) void checkBlob(file, state);

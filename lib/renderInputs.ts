@@ -2,7 +2,7 @@ import "server-only";
 
 import { listItems } from "./closet";
 import { fitInside } from "./cutout";
-import { detectImageFormat, type ImageFormat } from "./render";
+import { detectImageFormat, type FitTags, type ImageFormat } from "./render";
 
 /** Garment cutouts shrink to this; the avatar reference to AVATAR_MAX_SIDE. */
 export const CUTOUT_MAX_SIDE = 768;
@@ -16,6 +16,8 @@ export interface RenderInputs {
   cutoutDataUrls: string[];
   /** Total resized bytes sent to images/edits. */
   inputBytes: number;
+  /** Per-garment fit tags, in outfit order, for render/verify prompts. */
+  garments: FitTags[];
 }
 
 /** Per-instance memory cache of fetched+shrunk bytes, keyed by Blob URL. */
@@ -45,9 +47,19 @@ export async function loadRenderInputs(
   const avatarFormat = detectImageFormat(avatarBytes);
 
   const cutoutDataUrls: string[] = [];
+  const garments: FitTags[] = [];
   let inputBytes = avatarBytes.length;
   for (const id of itemIds) {
-    const cutoutUrl = byId.get(id)!.cutoutUrl;
+    const item = byId.get(id)!;
+    const cutoutUrl = item.cutoutUrl;
+    garments.push({
+      type: item.tags.type,
+      primary_color: item.tags.primary_color,
+      fit: item.tags.fit,
+      length: item.tags.length,
+      rise: item.tags.rise,
+      sleeve: item.tags.sleeve,
+    });
     let shrunk = bytesCache.get(cutoutUrl);
     if (!shrunk) {
       const cutoutRes = await fetch(cutoutUrl, { cache: "no-store" });
@@ -59,5 +71,5 @@ export async function loadRenderInputs(
     const format = detectImageFormat(shrunk);
     cutoutDataUrls.push(`data:${format.contentType};base64,${shrunk.toString("base64")}`);
   }
-  return { avatarBytes, avatarFormat, cutoutDataUrls, inputBytes };
+  return { avatarBytes, avatarFormat, cutoutDataUrls, inputBytes, garments };
 }

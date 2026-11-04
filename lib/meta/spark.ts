@@ -24,7 +24,7 @@ import {
   type RetryBudget,
 } from "./retry";
 import { FIT_VALUES, LENGTH_VALUES, normalizeFitTags, RISE_VALUES, SLEEVE_VALUES, TAG_SCHEMA, type GarmentTags } from "./tagSchema";
-import type { InventedItem } from "../render";
+import { buildVerifyPrompt, type InventedItem } from "../render";
 
 export type { GarmentTags };
 
@@ -769,6 +769,8 @@ export interface VerifyRenderInput {
   renderDataUrl: string;
   /** Reference cutout URLs (public Blob URLs), in outfit order. */
   referenceUrls: string[];
+  /** Per-garment fit lines; a wrong fit on a top/bottom is a major item. */
+  expectedFits?: string[];
   budget?: RetryBudget;
 }
 
@@ -790,6 +792,7 @@ interface RawInventedItem {
  */
 export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRenderResult> {
   const api = getMetaClient();
+  const verifyPrompt = buildVerifyPrompt(input.expectedFits ?? []);
   const { result: res } = await withModelFailover(
     "spark verify",
     (model) =>
@@ -803,15 +806,7 @@ export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRend
             content: [
               {
                 type: "input_text",
-                text:
-                  "The first image is a composed try-on render; the following images are the reference " +
-                  "garment cutouts given to the image model. The avatar wears a plain neutral base layer, " +
-                  "and the render may show an undershirt, socks, or plain neutral shoes when the look " +
-                  "provides no shoes — those are expected, do NOT list them. Set garments_match=true as " +
-                  "long as every reference garment is worn in the right color, type and fit. List ONLY a " +
-                  "clearly different or extra visible garment, or a wrong color/type/fit of a provided " +
-                  "garment, in invented_items. Mark major=true when the item is a top, bottom, outerwear " +
-                  "or dress; otherwise major=false.",
+                text: verifyPrompt,
               },
               { type: "input_image", detail: "auto", image_url: input.renderDataUrl },
               ...input.referenceUrls.map((image_url) => ({

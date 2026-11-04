@@ -15,9 +15,11 @@ import {
 } from "@/lib/meta/retry";
 import { verifyRender } from "@/lib/meta/spark";
 import {
+  buildRenderPrompt,
   decideVerification,
+  describeLookFits,
   detectImageFormat,
-  RENDER_PROMPT,
+  fitCorrection,
   renderCacheKey,
   type RenderRecord,
 } from "@/lib/render";
@@ -76,7 +78,7 @@ export async function POST(req: Request) {
     if (!firstUrl) {
       const raw = await editImage({
         images: [avatarDataUrl, ...inputs.cutoutDataUrls],
-        prompt: RENDER_PROMPT,
+        prompt: buildRenderPrompt(inputs.garments),
         budget,
       });
       const format = detectImageFormat(raw);
@@ -96,9 +98,11 @@ export async function POST(req: Request) {
     const firstFormat = detectImageFormat(firstBytes);
     const firstDataUrl = `data:${firstFormat.contentType};base64,${firstBytes.toString("base64")}`;
 
+    const fitLines = describeLookFits(inputs.garments);
     const verdict = await verifyRender({
       renderDataUrl: firstDataUrl,
       referenceUrls: inputs.cutoutDataUrls,
+      expectedFits: fitLines,
       budget,
     });
     const decision = decideVerification(verdict.garments_match, verdict.invented_items, 0);
@@ -112,10 +116,15 @@ export async function POST(req: Request) {
     let invented = verdict.invented_items;
     if (decision === "rerender") {
       const majorNames = invented.filter((entry) => entry.major).map((entry) => entry.item);
+      const corrections = majorNames
+        .map((name) => fitCorrection(name, inputs.garments))
+        .filter((line): line is string => line !== null);
       const prompt =
-        majorNames.length > 0
-          ? `${RENDER_PROMPT} Remove these invented items: ${majorNames.join(", ")}.`
-          : `${RENDER_PROMPT} Match the reference garments exactly.`;
+        corrections.length > 0
+          ? `${buildRenderPrompt(inputs.garments)} Corrections: ${corrections.join(" ")}`
+          : majorNames.length > 0
+            ? `${buildRenderPrompt(inputs.garments)} Remove these invented items: ${majorNames.join(", ")}.`
+            : `${buildRenderPrompt(inputs.garments)} Match the reference garments exactly.`;
       const raw = await editImage({
         images: [avatarDataUrl, ...inputs.cutoutDataUrls],
         prompt,
@@ -131,6 +140,7 @@ export async function POST(req: Request) {
       const second = await verifyRender({
         renderDataUrl: secondDataUrl,
         referenceUrls: inputs.cutoutDataUrls,
+        expectedFits: fitLines,
         budget,
       });
       const secondDecision = decideVerification(second.garments_match, second.invented_items, 1);

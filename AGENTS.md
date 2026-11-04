@@ -1,9 +1,9 @@
-# AGENTS.md: Closet AI
+# AGENTS.md: Closet Pod
 
 Instructions for coding agents (Muse Code) working in this repo. Read this fully before every task.
 
 ## What this is
-**Closet AI**: a mobile-first web app that dresses you from clothes you already own. It builds a closet from photos and video, recommends outfits for your weather, mood and plans, and talks you through getting dressed (it can help low-vision users dress independently).
+**Closet Pod**: a mobile-first web app that dresses you from clothes you already own. It builds a closet from photos and video, recommends outfits for your weather, mood and plans, and talks you through getting dressed (it can help low-vision users dress independently).
 Built for the **Meta Global AI Developer Hackathon** (Indie track, theme "Build for Your World"). **Submission deadline: Nov 4, 2026, 8 PM ET** (treat as a hard stop).
 
 ## Hackathon rules (breaking any = disqualification)

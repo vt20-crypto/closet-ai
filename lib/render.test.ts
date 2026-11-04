@@ -1,13 +1,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import { hashKey } from "./hash.ts";
 import {
   buildAvatarPrompt,
+  buildRenderPrompt,
   buildSavedLook,
+  buildVerifyPrompt,
   decideVerification,
+  describeGarmentFit,
   detectImageFormat,
+  fitCorrection,
+  fitSilhouette,
+  lengthPhrase,
   RENDER_PROMPT,
+  RENDER_PROMPT_VERSION,
   renderCacheKey,
+  risePhrase,
+  sleevePhrase,
 } from "./render.ts";
 
 describe("renderCacheKey", () => {
@@ -16,6 +26,12 @@ describe("renderCacheKey", () => {
     assert.notEqual(renderCacheKey("v1", ["a", "b"]), renderCacheKey("v2", ["a", "b"]));
     assert.notEqual(renderCacheKey("v1", ["a", "b"]), renderCacheKey("v1", ["a", "c"]));
     assert.match(renderCacheKey("v1", ["a"]), /^renders\/[0-9a-f]{8}$/);
+  });
+
+  it("invalidates renders cached before prompt versioning", () => {
+    const legacy = `renders/${hashKey(["v1", "a", "s1"].join("|"))}`;
+    assert.notEqual(renderCacheKey("v1", ["a"], "s1"), legacy);
+    assert.ok(Number.isInteger(RENDER_PROMPT_VERSION) && RENDER_PROMPT_VERSION > 0);
   });
 
   it("changes when the closet stamp changes", () => {
@@ -133,5 +149,100 @@ describe("buildAvatarPrompt likeness", () => {
     assert.match(prompt, /Preserve exact likeness: skin tone warm beige; hairstyle black bob\./);
     assert.match(prompt, /Same skin tone, hairstyle, facial hair, glasses\./);
     assert.match(prompt, /NOT a store mannequin/);
+  });
+});
+
+describe("fit phrases", () => {
+  it("maps every documented fit to a silhouette phrase", () => {
+    assert.match(fitSilhouette("baggy") ?? "", /wide straight leg/);
+    assert.match(fitSilhouette("wide-leg") ?? "", /flaring wide from the hip/);
+    assert.match(fitSilhouette("skinny") ?? "", /tight to the leg/);
+    assert.match(fitSilhouette("oversized") ?? "", /dropped shoulders/);
+    assert.match(fitSilhouette("bootcut") ?? "", /below the knee/);
+    assert.match(fitSilhouette("a-line") ?? "", /widening toward the hem/);
+  });
+
+  it("maps length, rise and sleeve axes", () => {
+    assert.equal(lengthPhrase("full"), "full length");
+    assert.equal(lengthPhrase("cropped"), "cropped above the ankle");
+    assert.equal(risePhrase("high"), "high-rise");
+    assert.equal(sleevePhrase("long"), "long sleeves");
+  });
+
+  it("returns null for n/a, missing and unknown values", () => {
+    for (const bad of ["n/a", "N/A", "", undefined, "balloon"]) {
+      assert.equal(fitSilhouette(bad), null);
+      assert.equal(lengthPhrase(bad), null);
+      assert.equal(risePhrase(bad), null);
+      assert.equal(sleevePhrase(bad), null);
+    }
+  });
+});
+
+describe("describeGarmentFit", () => {
+  it("puts the fit phrase first, then color and type", () => {
+    const line = describeGarmentFit({
+      type: "jeans",
+      primary_color: "blue",
+      fit: "baggy",
+      rise: "high",
+      length: "full",
+    });
+    assert.ok(line.startsWith("baggy, very loose"), `fit first, got: ${line}`);
+    assert.ok(line.includes("high-rise"), `rise included, got: ${line}`);
+    assert.ok(line.endsWith("blue jeans"), `color+type last, got: ${line}`);
+  });
+
+  it("falls back to color + type with no fit info", () => {
+    assert.equal(
+      describeGarmentFit({ type: "shoe", primary_color: "white", fit: "n/a" }),
+      "white shoe",
+    );
+  });
+});
+
+describe("buildRenderPrompt", () => {
+  it("keeps the base prompt and adds fit lines with the override rule", () => {
+    const prompt = buildRenderPrompt([
+      { type: "jeans", primary_color: "blue", fit: "baggy", rise: "high", length: "full" },
+      { type: "t-shirt", primary_color: "white", fit: "relaxed" },
+    ]);
+    assert.ok(prompt.startsWith(RENDER_PROMPT));
+    assert.ok(prompt.includes("- baggy, very loose"), "baggy line present");
+    assert.ok(prompt.includes("FIT described in text overrides"), "override rule present");
+  });
+
+  it("is the base prompt alone with no garments", () => {
+    assert.equal(buildRenderPrompt([]), RENDER_PROMPT);
+  });
+});
+
+describe("buildVerifyPrompt", () => {
+  it("names fits and flags wrong-fit tops/bottoms as major", () => {
+    const prompt = buildVerifyPrompt(["baggy, very loose blue jeans"]);
+    assert.ok(prompt.includes("baggy, very loose blue jeans"));
+    assert.ok(prompt.includes("wrong fit"), "wrong-fit rule present");
+    assert.ok(prompt.includes("major invented item"), "major rule present");
+  });
+
+  it("omits the fit section with no fits", () => {
+    assert.ok(!buildVerifyPrompt([]).includes("Expected fits"));
+  });
+});
+
+describe("fitCorrection", () => {
+  it("names the expected fit for a garment in the look", () => {
+    const correction = fitCorrection("jeans look slim, expected baggy wide-leg", [
+      { type: "jeans", primary_color: "blue", fit: "baggy" },
+    ]);
+    assert.ok(correction?.startsWith("Make the blue jeans clearly baggy"), `got: ${correction}`);
+  });
+
+  it("returns null when nothing in the look matches", () => {
+    assert.equal(fitCorrection("red jacket", [{ type: "jeans", fit: "baggy" }]), null);
+    assert.equal(
+      fitCorrection("jeans", [{ type: "jeans", primary_color: "blue", fit: "n/a" }]),
+      null,
+    );
   });
 });

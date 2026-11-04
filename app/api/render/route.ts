@@ -13,7 +13,7 @@ import {
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
-import { detectImageFormat, RENDER_PROMPT, renderCacheKey, type RenderRecord } from "@/lib/render";
+import { buildRenderPrompt, detectImageFormat, renderCacheKey, type RenderRecord } from "@/lib/render";
 import { loadRenderInputs } from "@/lib/renderInputs";
 
 export const maxDuration = 300;
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
 
     const raw = await editImage({
       images: [avatarDataUrl, ...inputs.cutoutDataUrls],
-      prompt: RENDER_PROMPT,
+      prompt: buildRenderPrompt(inputs.garments),
       budget,
     });
     const format = detectImageFormat(raw);

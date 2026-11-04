@@ -16,7 +16,7 @@ export default function TopNav() {
     <header className="sticky top-0 z-50 hidden border-b border-(--border-soft) bg-(--surface) text-(--text) md:block">
       <div className="mx-auto flex w-full max-w-2xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-6 py-2 md:max-w-[960px]">
         <Link href="/" className="font-display min-h-11 py-2 text-2xl">
-          Closet AI
+          Closet Pod
         </Link>
         <div className="flex flex-wrap items-center gap-2">
           <MeButton />

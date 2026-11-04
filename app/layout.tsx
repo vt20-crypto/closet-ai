@@ -6,13 +6,13 @@ import TabBar from "./tab-bar";
 import TopNav from "./top-nav";
 
 export const metadata: Metadata = {
-  title: "Closet AI",
+  title: "Closet Pod",
   description: "Outfits from the clothes you already own.",
   icons: { apple: "/icons/icon-180.png" },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Closet AI",
+    title: "Closet Pod",
   },
 };
 

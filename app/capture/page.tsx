@@ -208,6 +208,8 @@ export default function CapturePage() {
   const takeRef = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("No photos yet. Add clothes to start your closet.");
+  /** Shown when the picker hands us more than one file (we keep the first). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [meta, setMeta] = useState<Record<string, PhotoMeta>>({});
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -511,6 +513,13 @@ export default function CapturePage() {
     }
   }
 
+  /** Single-photo guard: every picker hands us files[0]; extras are ignored. */
+  function firstFile(files: FileList | null): File | undefined {
+    if (!files || files.length === 0) return undefined;
+    setNotice(files.length > 1 ? "One photo at a time - added the first one." : null);
+    return files[0];
+  }
+
   /** Rear camera: one photo, with the optional crop step before upload. */
   async function handleTakeFile(file: File | undefined) {
     if (!file || busy || cropTarget) return;
@@ -756,7 +765,7 @@ export default function CapturePage() {
         accept="image/*"
         capture="environment"
         className="sr-only"
-        onChange={(event) => void handleTakeFile(event.target.files?.[0])}
+        onChange={(event) => void handleTakeFile(firstFile(event.target.files))}
       />
       <input
         ref={uploadRef}
@@ -764,7 +773,7 @@ export default function CapturePage() {
         type="file"
         accept="image/*"
         className="sr-only"
-        onChange={(event) => void handleUploadFile(event.target.files?.[0])}
+        onChange={(event) => void handleUploadFile(firstFile(event.target.files))}
       />
       <div className="flex flex-col gap-3 min-[480px]:flex-row">
         <button
@@ -787,6 +796,7 @@ export default function CapturePage() {
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
+      {notice && <p className="text-lg text-(--text-muted)">{notice}</p>}
       {retryAction && (
         <button
           type="button"

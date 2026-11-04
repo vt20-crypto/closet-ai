@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Closet AI",
-    short_name: "Closet",
+    name: "Closet Pod",
+    short_name: "Closet Pod",
     start_url: "/",
     display: "standalone",
     background_color: "#FBF6EC",

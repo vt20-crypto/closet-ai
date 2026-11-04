@@ -60,6 +60,7 @@ function PhotoPicker(props: {
   onPick: (file: File | undefined) => void;
   onClear: () => void;
 }) {
+  const [pickerNotice, setPickerNotice] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-2">
       <label htmlFor={props.inputId} className="text-lg font-semibold">
@@ -87,13 +88,17 @@ function PhotoPicker(props: {
             accept="image/*"
             disabled={props.disabled || props.processing}
             onChange={(event) => {
-              props.onPick(event.target.files?.[0]);
+              const files = event.target.files;
+              // Single-photo only: extras are ignored with a notice.
+              setPickerNotice(files && files.length > 1 ? "One photo at a time - added the first one." : null);
+              props.onPick(files?.[0]);
               // Reset so picking the same file again still fires onChange;
               // the choice stays visible as a thumbnail once processed.
               event.target.value = "";
             }}
             className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4 py-3 text-base"
           />
+          {pickerNotice && <p className="text-base text-(--text-muted)">{pickerNotice}</p>}
           {props.processing && (
             <p role="status" className="text-base text-(--text-muted)">
               Processing photo…

@@ -1,4 +1,4 @@
-# Closet AI
+# Closet Pod
 
 Outfits from the clothes you already own. Photo your closet, get daily outfit picks for your weather, mood and plans.
 
