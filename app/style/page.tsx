@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import { slotRank } from "@/lib/outfits";
-import { buildSavedLook } from "@/lib/render";
+import { buildSavedLook, type InventedItem } from "@/lib/render";
 import { normalizeTimeOfDay, resolveDateText, todayISO, tomorrowISO } from "@/lib/when";
 import {
   applyMoreIdeas,
@@ -130,6 +130,28 @@ const MISSING_HINTS: Record<string, string> = {
   bottoms: "pants, jeans, shorts or a skirt",
 };
 
+type StageRecord = {
+  url: string | null;
+  verified: boolean;
+  invented: InventedItem[];
+  note?: string;
+};
+
+/** Store one record, dropping entries from older avatar versions. */
+function storeRender(
+  prev: Record<string, StageRecord>,
+  version: string,
+  key: string,
+  record: StageRecord,
+) {
+  const next: Record<string, StageRecord> = {};
+  for (const [storedKey, stored] of Object.entries(prev)) {
+    if (storedKey.startsWith(`${version}|`)) next[storedKey] = stored;
+  }
+  next[key] = record;
+  return next;
+}
+
 /** Tiny spark mark for the quiet credit line under each outfit. */
 function SparkIcon() {
   return (
@@ -177,12 +199,11 @@ export default function TodayPage() {
   const [stageIndex, setStageIndex] = useState(0);
   const [showItems, setShowItems] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
-  const [renders, setRenders] = useState<
-    Record<string, { url: string | null; verified: boolean; invented: string[]; note?: string }>
-  >({});
-  const rendersRef = useRef<Record<string, { url: string | null }>>({});
+  const [renders, setRenders] = useState<Record<string, StageRecord>>({});
+  const rendersRef = useRef<Record<string, StageRecord>>({});
   rendersRef.current = renders;
   const inflightRef = useRef<Set<string>>(new Set());
+  const verifyInflightRef = useRef<Set<string>>(new Set());
   const touchX = useRef<number | null>(null);
 
   function resetStage() {
@@ -330,20 +351,21 @@ export default function TodayPage() {
     };
   }, []);
 
-  // Pure fetch for one look's render: no state writes, so effects can call it.
-  // Returns the record to store, "no-avatar" when the avatar is gone, or null
-  // when there is nothing to store (cached, in flight, failed prefetch).
-  const fetchRender = useCallback(
+  // First image for one look: returns the stored record, "no-avatar" when the
+  // avatar is gone, or null when there is nothing to store (cached, in
+  // flight). Failures store a flat-lay fallback record, never an error.
+  const renderLook = useCallback(
     async (
       outfit: OutfitView,
-      prefetch: boolean,
     ): Promise<
-      | { url: string | null; verified: boolean; invented: string[]; note?: string }
+      | { url: string | null; verified: boolean; invented: InventedItem[]; note?: string }
       | "no-avatar"
       | null
     > => {
-      const key = renderKey(outfit.key);
-      if (!avatar || rendersRef.current[key] || inflightRef.current.has(key)) return null;
+      const key = `${avatar?.version ?? "?"}|${outfit.key}`;
+      const existing = rendersRef.current[key];
+      if (existing) return existing;
+      if (!avatar || inflightRef.current.has(key)) return null;
       inflightRef.current.add(key);
       try {
         const res = await fetch("/api/render", {
@@ -354,28 +376,40 @@ export default function TodayPage() {
         const body = (await res.json()) as {
           url?: string | null;
           verified?: boolean;
-          invented?: string[];
+          invented?: InventedItem[];
           note?: string;
           code?: string;
         };
-        if (!res.ok) return body.code === "no-avatar" ? "no-avatar" : null;
-        return {
+        if (!res.ok) {
+          if (body.code === "no-avatar") return "no-avatar";
+          const fallback = {
+            url: null,
+            verified: false,
+            invented: [] as InventedItem[],
+            note: "Couldn't render this look — showing the items.",
+          };
+          const atVersion = avatar.version;
+          setRenders((prev) => storeRender(prev, atVersion, key, fallback));
+          return fallback;
+        }
+        const record = {
           url: body.url ?? null,
-          verified: body.verified === true,
-          invented: body.invented ?? [],
-          note: body.note,
+          verified: false,
+          invented: [] as InventedItem[],
         };
+        const atVersion = avatar.version;
+        setRenders((prev) => storeRender(prev, atVersion, key, record));
+        return record;
       } catch {
-        // Direct renders fall back to the flat-lay; prefetch failures stay silent
-        // so selecting the look retries through the same path.
-        return prefetch
-          ? null
-          : {
-              url: null,
-              verified: false,
-              invented: [],
-              note: "Couldn't render this look — showing the items.",
-            };
+        const atVersion = avatar.version;
+        const fallback = {
+          url: null,
+          verified: false,
+          invented: [] as InventedItem[],
+          note: "Couldn't render this look — showing the items.",
+        };
+        setRenders((prev) => storeRender(prev, atVersion, key, fallback));
+        return fallback;
       } finally {
         inflightRef.current.delete(key);
       }
@@ -383,39 +417,73 @@ export default function TodayPage() {
     [avatar],
   );
 
-  // Auto-render the staged look onto the avatar; prefetch the next one.
+  // Background verification for one look: on a real failure the route
+  // re-renders and the new URL swaps in (the <img> keeps old pixels until
+  // the new ones decode, so there is no blank frame).
+  const verifyLook = useCallback(
+    async (
+      outfit: OutfitView,
+      record: { url: string | null; verified: boolean },
+      version: string,
+    ): Promise<void> => {
+      const key = `${version}|${outfit.key}`;
+      if (!record.url || record.verified || verifyInflightRef.current.has(key)) return;
+      verifyInflightRef.current.add(key);
+      try {
+        const res = await fetch("/api/render/verify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ itemIds: outfit.item_ids }),
+        });
+        const body = (await res.json()) as {
+          url?: string | null;
+          verified?: boolean;
+          invented?: InventedItem[];
+          note?: string;
+          code?: string;
+        };
+        if (!res.ok) {
+          if (body.code === "no-avatar") setAvatar(null);
+          return;
+        }
+        const next = {
+          url: body.url ?? record.url,
+          verified: body.verified === true,
+          invented: body.invented ?? [],
+          note: body.note,
+        };
+        setRenders((prev) => storeRender(prev, version, key, next));
+      } catch {
+        // Keep the first image.
+      } finally {
+        verifyInflightRef.current.delete(key);
+      }
+    },
+    [],
+  );
+
+  // Render every look on the page in parallel (at most 3), then verify each
+  // in the background. The user never waits on verification.
   useEffect(() => {
     if (!avatar || !pager) return;
     const current = currentPage(pager);
     if (current.length === 0) return;
+    const version = avatar.version;
     let cancelled = false;
-    const store = async (outfit: OutfitView, prefetch: boolean) => {
-      const result = await fetchRender(outfit, prefetch);
-      if (cancelled || !result) return;
-      if (result === "no-avatar") {
-        setAvatar(null);
-        return;
-      }
-      const atVersion = avatar.version;
-      const atKey = `${atVersion}|${outfit.key}`;
-      setRenders((prev) => {
-        // Drop records from older avatar versions while storing.
-        const next: typeof prev = {};
-        for (const [storedKey, record] of Object.entries(prev)) {
-          if (storedKey.startsWith(`${atVersion}|`)) next[storedKey] = record;
+    for (const outfit of current.slice(0, 3)) {
+      void (async () => {
+        const record = await renderLook(outfit);
+        if (cancelled || !record || record === "no-avatar") {
+          if (record === "no-avatar" && !cancelled) setAvatar(null);
+          return;
         }
-        next[atKey] = result;
-        return next;
-      });
-    };
-    const look = current[Math.min(stageIndex, current.length - 1)];
-    if (look) void store(look, false);
-    const next = current[stageIndex + 1];
-    if (next) void store(next, true);
+        await verifyLook(outfit, record, version);
+      })();
+    }
     return () => {
       cancelled = true;
     };
-  }, [avatar, stageIndex, pager, fetchRender]);
+  }, [avatar, pager, renderLook, verifyLook]);
 
   // Persist the staged look for the upcoming Lookbook task (stub until then).
   function saveLook(outfit: OutfitView) {

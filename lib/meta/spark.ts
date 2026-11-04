@@ -25,6 +25,7 @@ import {
   type RetryBudget,
 } from "./retry";
 import { TAG_SCHEMA, type GarmentTags } from "./tagSchema";
+import type { InventedItem } from "../render";
 
 export type { GarmentTags };
 
@@ -576,7 +577,18 @@ const VERIFY_SCHEMA = {
   type: "object",
   properties: {
     garments_match: { type: "boolean" },
-    invented_items: { type: "array", items: { type: "string" } },
+    invented_items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          item: { type: "string" },
+          major: { type: "boolean" },
+        },
+        required: ["item", "major"],
+        additionalProperties: false,
+      },
+    },
   },
   required: ["garments_match", "invented_items"],
   additionalProperties: false,
@@ -592,12 +604,19 @@ export interface VerifyRenderInput {
 
 export interface VerifyRenderResult {
   garments_match: boolean;
-  invented_items: string[];
+  invented_items: InventedItem[];
+}
+
+interface RawInventedItem {
+  item?: unknown;
+  major?: unknown;
 }
 
 /**
  * Render verification (spike 08c shape): the render first, then every
- * reference cutout. Runs through the Spark failover chain.
+ * reference cutout. Runs through the Spark failover chain. The avatar's
+ * neutral base layer, undershirt, socks and plain neutral shoes (when the
+ * look provides no shoes) are expected and must NOT be flagged.
  */
 export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRenderResult> {
   const api = getMetaClient();
@@ -616,9 +635,13 @@ export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRend
                 type: "input_text",
                 text:
                   "The first image is a composed try-on render; the following images are the reference " +
-                  "garment cutouts given to the image model. Set garments_match=true ONLY if the person " +
-                  "wears exactly the reference garments and no other clothing was added, invented or " +
-                  "substituted. List any added/invented clothing in invented_items.",
+                  "garment cutouts given to the image model. The avatar wears a plain neutral base layer, " +
+                  "and the render may show an undershirt, socks, or plain neutral shoes when the look " +
+                  "provides no shoes — those are expected, do NOT list them. Set garments_match=true as " +
+                  "long as every reference garment is worn in the right color, type and fit. List ONLY a " +
+                  "clearly different or extra visible garment, or a wrong color/type/fit of a provided " +
+                  "garment, in invented_items. Mark major=true when the item is a top, bottom, outerwear " +
+                  "or dress; otherwise major=false.",
               },
               { type: "input_image", detail: "auto", image_url: input.renderDataUrl },
               ...input.referenceUrls.map((image_url) => ({
@@ -633,10 +656,17 @@ export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRend
       }),
     input.budget,
   );
-  const parsed = JSON.parse(res.output_text ?? "") as Partial<VerifyRenderResult>;
-  const invented = Array.isArray(parsed.invented_items)
-    ? parsed.invented_items.filter((item): item is string => typeof item === "string")
-    : [];
+  const parsed = JSON.parse(res.output_text ?? "") as {
+    garments_match?: unknown;
+    invented_items?: unknown;
+  };
+  const raw = Array.isArray(parsed.invented_items) ? parsed.invented_items : [];
+  const invented: InventedItem[] = raw
+    .filter((entry): entry is RawInventedItem => typeof entry === "object" && entry !== null)
+    .map((entry) => ({
+      item: typeof entry.item === "string" && entry.item ? entry.item : "unknown garment",
+      major: entry.major === true,
+    }));
   return { garments_match: parsed.garments_match === true, invented_items: invented };
 }
 

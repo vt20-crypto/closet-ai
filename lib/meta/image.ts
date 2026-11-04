@@ -1,11 +1,7 @@
 import "server-only";
 
-import {
-  MODEL_404_RETRY_DELAYS_MS,
-  sleep,
-  sleepWithinBudget,
-  type RetryBudget,
-} from "./retry";
+import { getMetaClient } from "./client";
+import { sleep, sleepWithinBudget, type RetryBudget } from "./retry";
 
 /**
  * Muse Image (`muse-image-1.0`) via POST /v1/images/edits with a JSON body:
@@ -18,6 +14,22 @@ import {
 const EDITS_URL = "https://api.meta.ai/v1/images/edits";
 // 2:3 in the documented WxH form.
 const IMAGE_SIZE = "1024x1536";
+// 404 bursts ride out over ~30s (1+2+4+8+15) instead of failing in ~3s.
+const IMAGE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
+
+/**
+ * Is muse-image-1.0 currently listed? A missing model means keep waiting,
+ * not firing doomed calls. A broken list endpoint fails open (the image
+ * call itself is the real test).
+ */
+async function imageModelVisibility(): Promise<"yes" | "no" | "error"> {
+  try {
+    const list = await getMetaClient().models.list();
+    return list.data.some((model) => model.id === "muse-image-1.0") ? "yes" : "no";
+  } catch {
+    return "error";
+  }
+}
 
 export interface EditImageInput {
   /** Data URLs (selfies, cutouts) or public Blob URLs, 1–10 refs. */
@@ -64,7 +76,24 @@ export async function editImage(input: EditImageInput): Promise<Buffer> {
     let size: string | undefined = IMAGE_SIZE;
     let sizeRetried = false;
     let outageRounds = 0;
+    const failOutage = (status: number): never => {
+      outcome.label = "outage";
+      throw outageError(status, status === 404 ? "not found" : "unavailable");
+    };
     for (;;) {
+      if (outageRounds > 0) {
+        // Gate every refire on the model being listed: a silent model
+        // means keep waiting, not firing doomed calls.
+        const visibility = await imageModelVisibility();
+        console.log(`image models_list=${visibility} wait_round=${outageRounds}`);
+        if (visibility === "no") {
+          if (outageRounds >= IMAGE_RETRY_DELAYS_MS.length) failOutage(404);
+          const delay = IMAGE_RETRY_DELAYS_MS[outageRounds];
+          outageRounds += 1;
+          if (!(await gatedSleep(delay, input.budget))) failOutage(404);
+          continue;
+        }
+      }
       outcome.attempts += 1;
       const attemptStart = Date.now();
       const res = await fetch(EDITS_URL, {
@@ -100,20 +129,14 @@ export async function editImage(input: EditImageInput): Promise<Buffer> {
       }
       const retryable = (status === 404 && /model/i.test(text)) || status === 429 || status >= 500;
       if (retryable) {
-        if (outageRounds >= MODEL_404_RETRY_DELAYS_MS.length) {
-          outcome.label = "outage";
-          throw outageError(status, status === 404 ? "not found" : "unavailable");
-        }
+        if (outageRounds >= IMAGE_RETRY_DELAYS_MS.length) failOutage(status);
         const headerValue = status === 429 ? res.headers.get("retry-after") : null;
         const secs = headerValue ? Number(headerValue) : NaN;
         const delay = Number.isFinite(secs)
           ? Math.max(0, secs * 1000)
-          : MODEL_404_RETRY_DELAYS_MS[outageRounds];
+          : IMAGE_RETRY_DELAYS_MS[outageRounds];
         outageRounds += 1;
-        if (!(await gatedSleep(delay, input.budget))) {
-          outcome.label = "outage";
-          throw outageError(status, status === 404 ? "not found" : "unavailable");
-        }
+        if (!(await gatedSleep(delay, input.budget))) failOutage(status);
         continue;
       }
       outcome.label = "http";

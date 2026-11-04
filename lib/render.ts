@@ -95,15 +95,35 @@ export function renderCacheKey(avatarVersion: string, itemIds: string[]): string
   return `renders/${hashKey([avatarVersion, ...[...itemIds].sort()].join("|"))}`;
 }
 
-export type VerifyDecision = "pass" | "rerender" | "fallback";
+export interface InventedItem {
+  item: string;
+  /** Top, bottom, outerwear or dress level — worth a re-render. */
+  major: boolean;
+}
+
+export type VerifyDecision = "pass" | "rerender" | "accept";
+
+/** Blob cache record for one look: first image, then verification fills in. */
+export interface RenderRecord {
+  url: string;
+  verified: boolean;
+  invented: InventedItem[];
+}
 
 /**
- * Pure verification decision: match passes; the first failure re-renders
- * once naming the invented items; anything after that falls back to flat-lay.
+ * Pure verification decision. Expected base-layer bits (plain base layer,
+ * undershirt, socks, neutral shoes when the look provides none) arrive as
+ * major=false and never trigger a re-render. A mismatch, or any major
+ * invented garment, re-renders once; anything after that is accepted as-is
+ * (the first image already on screen stays).
  */
-export function decideVerification(garmentsMatch: boolean, attempt: number): VerifyDecision {
-  if (garmentsMatch) return "pass";
-  return attempt <= 0 ? "rerender" : "fallback";
+export function decideVerification(
+  garmentsMatch: boolean,
+  invented: InventedItem[],
+  attempt: number,
+): VerifyDecision {
+  if (garmentsMatch && !invented.some((entry) => entry.major)) return "pass";
+  return attempt <= 0 ? "rerender" : "accept";
 }
 
 export interface SavedLook {

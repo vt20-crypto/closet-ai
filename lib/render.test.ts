@@ -20,11 +20,28 @@ describe("renderCacheKey", () => {
 });
 
 describe("decideVerification", () => {
-  it("passes on match, re-renders once, then falls back", () => {
-    assert.equal(decideVerification(true, 0), "pass");
-    assert.equal(decideVerification(false, 0), "rerender");
-    assert.equal(decideVerification(false, 1), "fallback");
-    assert.equal(decideVerification(true, 1), "pass");
+  it("passes on a clean match", () => {
+    assert.equal(decideVerification(true, [], 0), "pass");
+    assert.equal(decideVerification(true, [], 1), "pass");
+  });
+
+  it("ignores expected base-layer bits and neutral shoes", () => {
+    const minor = [
+      { item: "plain base layer", major: false },
+      { item: "white undershirt", major: false },
+      { item: "gray socks", major: false },
+      { item: "neutral shoes", major: false },
+    ];
+    assert.equal(decideVerification(true, minor, 0), "pass");
+    assert.equal(decideVerification(true, minor, 1), "pass");
+  });
+
+  it("re-renders once on mismatch or a major invented garment, then accepts", () => {
+    const major = [{ item: "red jacket", major: true }];
+    assert.equal(decideVerification(false, [], 0), "rerender");
+    assert.equal(decideVerification(true, major, 0), "rerender");
+    assert.equal(decideVerification(false, [], 1), "accept");
+    assert.equal(decideVerification(true, major, 1), "accept");
   });
 });
 

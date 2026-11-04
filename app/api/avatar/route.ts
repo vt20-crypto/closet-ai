@@ -17,7 +17,7 @@ import {
 } from "@/lib/meta/retry";
 import { buildAvatarPrompt, detectImageFormat, type Vibe } from "@/lib/render";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MAX_DATA_URL = 4 * 1024 * 1024;
 
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
   const started = Date.now();
   const routeMs = () => Date.now() - started;
   // ~55s retry budget inside the 60s route ceiling.
-  const budget = createRetryBudget(started + 55_000);
+  const budget = createRetryBudget(started + 290_000);
   let body: unknown;
   try {
     body = await req.json();

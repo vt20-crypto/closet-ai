@@ -141,6 +141,20 @@ export async function flattenForTag(png: Buffer, background = "#f5f5f5"): Promis
     .toBuffer();
 }
 
+/**
+ * Shrink an image to at most maxSide on the long side, keeping format and
+ * transparency. Small inputs render faster; never enlarges small images.
+ */
+export async function fitInside(imageBytes: Buffer, maxSide: number): Promise<Buffer> {
+  const meta = await sharp(imageBytes).metadata();
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+  if (width <= 0 || height <= 0 || Math.max(width, height) <= maxSide) return imageBytes;
+  return sharp(imageBytes)
+    .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
+    .toBuffer();
+}
+
 const PADDING_RATIO = 0.08;
 
 /**
