@@ -11,6 +11,7 @@ import {
   slotForType,
   slotRank,
   validateOutfits,
+  wearableItems,
   type OutfitItemLike,
 } from "./outfits.ts";
 
@@ -201,6 +202,13 @@ test("arrangeForPages interleaves a repeated bottom", () => {
   assert.deepEqual(
     arranged.map((o) => o.key),
     ["b1|s1|t1", "b2|s1|t3", "b1|s1|t2"],
+  );
+});
+
+test("wearableItems hides laundry pieces", () => {
+  assert.deepEqual(
+    wearableItems([{ id: "a" }, { id: "b", laundry: true }, { id: "c", laundry: false }]).map((i) => i.id),
+    ["a", "c"],
   );
 });
 

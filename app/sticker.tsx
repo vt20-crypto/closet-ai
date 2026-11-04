@@ -19,6 +19,7 @@ interface StickerProps {
   /** Pass lazy for below-the-fold grids (closet, capture candidates). */
   lazy?: boolean;
   className?: string;
+  onLoad?: () => void;
 }
 
 /**
@@ -26,7 +27,7 @@ interface StickerProps {
  * sticker edge, both modes), id-seeded tilt, springy pop-in. Tilt is pure
  * decoration — DOM order and alt text carry the meaning.
  */
-export function Sticker({ src, alt, seedId, rich, lazy, className }: StickerProps) {
+export function Sticker({ src, alt, seedId, rich, lazy, className, onLoad }: StickerProps) {
   const tilt = tiltForId(seedId, 4);
   return (
     <img
@@ -34,6 +35,7 @@ export function Sticker({ src, alt, seedId, rich, lazy, className }: StickerProp
       alt={alt}
       loading={lazy ? "lazy" : undefined}
       draggable={false}
+      onLoad={onLoad}
       style={{ rotate: `${tilt}deg` } as CSSProperties}
       className={`${rich ? "sticker-rich" : "sticker-lite"} animate-sticker-pop h-full w-full object-contain ${
         className ?? ""

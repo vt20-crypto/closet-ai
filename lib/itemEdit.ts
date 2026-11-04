@@ -29,10 +29,14 @@ export function validateItemEdit(
   body: Record<string, unknown>,
   current: EditableTags,
 ): { tags?: EditableTags; error?: string } {
+  // Nickname is optional: empty clears it and the "<color> <type>" fallback shows.
   let nickname = current.nickname;
   if (body.nickname !== undefined) {
-    const text = cleanText(body.nickname, MAX_NICKNAME);
-    if (text === null || text.split(/\s+/).length > 2) {
+    if (typeof body.nickname !== "string") {
+      return { error: "Nicknames are at most 2 words and 16 characters." };
+    }
+    const text = body.nickname.trim();
+    if (text.length > MAX_NICKNAME || (text && text.split(/\s+/).length > 2)) {
       return { error: "Nicknames are at most 2 words and 16 characters." };
     }
     nickname = text;

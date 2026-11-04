@@ -15,6 +15,7 @@ import {
   outfitKey,
   slotForType,
   validateOutfits,
+  wearableItems,
   type MissingCategory,
   type RawOutfit,
 } from "@/lib/outfits";
@@ -93,7 +94,9 @@ export async function POST(request: Request) {
       }
     }
 
-    const items = await listItems();
+    // Full listing stays server-side; the model sees a compact slice.
+    // Laundry pieces sit out of coverage, picks and counts.
+    const items = wearableItems(await listItems());
     const counts = countCoverage(items);
     const missing: MissingCategory[] = coverageMissing(counts);
     if (missing.length > 0) {

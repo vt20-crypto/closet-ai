@@ -5,8 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
 import CropEditor from "./crop-editor";
+import GarmentTile from "../garment-tile";
 import ItemEditor, { type EditableItem } from "../item-editor";
-import { Sticker, Tape } from "../sticker";
 import { tapeLabel } from "@/lib/labels";
 import { createNDJSONParser } from "@/lib/ndjson";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
@@ -139,55 +139,55 @@ function CandidateCard({
     candidate.tags && candidate.tags.is_single_garment
       ? tapeLabel(candidate.tags)
       : title;
+  const caption = candidate.tags
+    ? [
+        candidate.tags.fit && candidate.tags.fit !== "n/a" ? candidate.tags.fit : "",
+        candidate.tags.primary_color,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : candidateSubtitle(candidate);
   return (
-    <li className="flex gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface-2) p-4 shadow-[0_10px_24px_var(--shadow)]">
-      <div className="flex aspect-[3/4] w-36 shrink-0 items-center justify-center">
-        {/* Remote Blob URLs vary per store, so plain img (not next/image). */}
-        <Sticker
-          src={candidate.cutoutUrl}
-          alt={candidate.tags ? `${title} in ${candidate.tags.primary_color}` : `${title} cutout`}
-          seedId={candidate.id}
-          lazy
-        />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <p className="self-start">
-          <Tape label={tape} seedId={candidate.id} />
-        </p>
-        <p className="text-lg capitalize">{candidateSubtitle(candidate)}</p>
-        <div className="mt-auto flex gap-3">
-          <button
-            type="button"
-            disabled={locked || candidate.tagging}
-            onClick={(event) => {
-              // Fire-and-forget stamp visual; the confirm flow is unchanged.
-              event.currentTarget.classList.add("animate-stamp");
-              onKeep(candidate.id);
-            }}
-            aria-label={`${keepLabel} ${title}`}
-            className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
-          >
-            {keepLabel}
-          </button>
-          <button
-            type="button"
-            disabled={locked || candidate.tagging}
-            onClick={() => onEdit(candidate.id)}
-            aria-label={`Edit ${title}`}
-            className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            disabled={locked || candidate.tagging}
-            onClick={() => onDiscard(candidate.id)}
-            aria-label={`Discard ${title}`}
-            className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-          >
-            Discard
-          </button>
-        </div>
+    <li className="flex flex-col gap-2">
+      <GarmentTile
+        id={candidate.id}
+        title={candidate.tags ? `${title} in ${candidate.tags.primary_color}` : `${title} cutout`}
+        imageUrl={candidate.cutoutUrl}
+        tape={tape}
+        caption={caption}
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={locked || candidate.tagging}
+          onClick={(event) => {
+            // Fire-and-forget stamp visual; the confirm flow is unchanged.
+            event.currentTarget.classList.add("animate-stamp");
+            onKeep(candidate.id);
+          }}
+          aria-label={`${keepLabel} ${title}`}
+          className="min-h-14 flex-1 rounded-full bg-(--primary) px-4 text-lg font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+        >
+          {keepLabel}
+        </button>
+        <button
+          type="button"
+          disabled={locked || candidate.tagging}
+          onClick={() => onEdit(candidate.id)}
+          aria-label={`Edit ${title}`}
+          className="min-h-14 flex-1 rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+        >
+          Edit
+        </button>
+        <button
+          type="button"
+          disabled={locked || candidate.tagging}
+          onClick={() => onDiscard(candidate.id)}
+          aria-label={`Discard ${title}`}
+          className="min-h-14 flex-1 rounded-full border border-(--border) px-4 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+        >
+          Discard
+        </button>
       </div>
     </li>
   );
@@ -209,6 +209,9 @@ async function resizeToJpeg(source: Blob): Promise<Blob> {
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close();
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  // Release the backing store right away; iOS memory is tight.
+  canvas.width = 0;
+  canvas.height = 0;
   if (!blob) throw new Error("Could not encode the photo as JPEG.");
   return blob;
 }
@@ -443,7 +446,7 @@ export default function CapturePage() {
   }
 
   /** Upload one JPEG blob as a new photo. Returns null on failure. */
-  async function uploadSingle(jpeg: Blob, label: string): Promise<Photo | null> {
+  async function uploadSingle(jpeg: Blob, label: string, quiet = false): Promise<Photo | null> {
     try {
       const result = await upload(`photos/${Date.now()}.jpg`, jpeg, {
         access: "public",
@@ -452,10 +455,20 @@ export default function CapturePage() {
       });
       return { url: result.url, pathname: result.pathname };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Upload failed.";
-      setStatus(`${label} failed: ${message}`);
+      if (!quiet) {
+        const message = err instanceof Error ? err.message : "Upload failed.";
+        setStatus(`${label} failed: ${message}`);
+      }
       return null;
     }
+  }
+
+  /** HEIC/HEIF from the photo library often won't decode in the browser. */
+  function decodeError(file: Blob): string {
+    if (!file.type || /heic|heif/i.test(file.type)) {
+      return "Couldn't read this photo. Try Take photo instead.";
+    }
+    return "Couldn't read this photo.";
   }
 
   /** Crop step result: null means skip (file flow proceeds, backlog closes). */
@@ -534,7 +547,11 @@ export default function CapturePage() {
 
   /** Upload picker: up to 20 photos into the queue, then upload + scan. */
   async function handleUploadFiles(files: FileList | null) {
-    if (!files || files.length === 0 || busy || cropTarget) return;
+    if (!files || files.length === 0 || busy) return;
+    if (cropTarget) {
+      setStatus("Finish the crop first (Use crop or Skip), then add photos.");
+      return;
+    }
     const batch = Array.from(files).slice(0, MAX_FILES);
     if (files.length > MAX_FILES) {
       setStatus(`Taking the first ${MAX_FILES} of ${files.length} photos.`);
@@ -547,6 +564,7 @@ export default function CapturePage() {
       thumbUrl: URL.createObjectURL(file),
       status: "queued",
     }));
+    // The queue renders before any decode or upload runs.
     setQueue(items);
     setBusy(true);
     try {
@@ -556,9 +574,11 @@ export default function CapturePage() {
         if (!current || current.status !== "queued") continue;
         setQueueItem(item.id, { status: "uploading", error: undefined });
         try {
-          const jpeg = await resizeToJpeg(current.file);
-          const photo = await uploadSingle(jpeg, current.name);
-          if (!photo) throw new Error("Upload failed.");
+          const jpeg = await resizeToJpeg(current.file).catch(() => {
+            throw new Error(decodeError(current.file));
+          });
+          const photo = await uploadSingle(jpeg, current.name, true);
+          if (!photo) throw new Error("Upload failed. Tap Retry.");
           setQueueItem(item.id, { status: "ready", photo });
         } catch (err) {
           const message = err instanceof Error ? err.message : "Upload failed.";
@@ -589,6 +609,32 @@ export default function CapturePage() {
     }
   }
 
+  /** Clear the finished queue and release every thumbnail URL. */
+  function clearQueue() {
+    for (const entry of queueRef.current) {
+      try {
+        URL.revokeObjectURL(entry.thumbUrl);
+      } catch {
+        // Already released.
+      }
+    }
+    setQueue([]);
+  }
+
+  // Release thumbnails if the page unmounts mid-queue.
+  useEffect(() => {
+    const ref = queueRef;
+    return () => {
+      for (const entry of ref.current) {
+        try {
+          URL.revokeObjectURL(entry.thumbUrl);
+        } catch {
+          // Already released.
+        }
+      }
+    };
+  }, []);
+
   /** Retry one failed queue photo (upload first when it never uploaded). */
   async function retryQueueItem(id: string) {
     const entry = queueRef.current.find((item) => item.id === id);
@@ -598,9 +644,11 @@ export default function CapturePage() {
       let photo: Photo | undefined = entry.photo;
       if (!photo) {
         setQueueItem(id, { status: "uploading", error: undefined });
-        const jpeg = await resizeToJpeg(entry.file);
-        const uploaded = await uploadSingle(jpeg, entry.name);
-        if (!uploaded) throw new Error("Upload failed.");
+        const jpeg = await resizeToJpeg(entry.file).catch(() => {
+          throw new Error(decodeError(entry.file));
+        });
+        const uploaded = await uploadSingle(jpeg, entry.name, true);
+        if (!uploaded) throw new Error("Upload failed. Tap Retry.");
         photo = uploaded;
         setQueueItem(id, { status: "ready", photo });
         await refresh();
@@ -941,7 +989,7 @@ export default function CapturePage() {
           {queue.every((entry) => entry.status === "done" || entry.status === "failed") && (
             <button
               type="button"
-              onClick={() => setQueue([])}
+              onClick={clearQueue}
               className="min-h-11 self-start rounded-full border border-(--border) px-6 text-base font-semibold"
             >
               Clear list

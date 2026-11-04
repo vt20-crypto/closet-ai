@@ -24,6 +24,8 @@ import VoiceButton, { type VoiceSlots } from "./voice-button";
 
 const CITY_KEY = "closet-ai-city";
 const SESSION_KEY = "closet-ai-style-session";
+/** Outage refire schedule: 30s, 60s, 120s, then the manual button only. */
+const RETRY_DELAYS = [30_000, 60_000, 120_000];
 
 interface SavedSession {
   v: 1;
@@ -181,6 +183,8 @@ export default function TodayPage() {
   const [timeOfDay, setTimeOfDay] = useState<string | null>(null);
   const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [pager, setPager] = useState<OutfitPagerState<OutfitView> | null>(null);
+  const pagerRef = useRef<OutfitPagerState<OutfitView> | null>(null);
+  pagerRef.current = pager;
   const [itemCards, setItemCards] = useState<Record<string, ItemCard>>({});
   const [weather, setWeather] = useState<WeatherView | null>(null);
   const [dressCode, setDressCode] = useState<DressCodeView | null>(null);
@@ -198,6 +202,9 @@ export default function TodayPage() {
   const draftRef = useRef("");
   const acceptTimer = useRef<number | null>(null);
   const [relaxed, setRelaxed] = useState(false);
+  /** "Your closet changed · Refresh looks" pill, set on focus/visibility. */
+  const [closetPill, setClosetPill] = useState(false);
+  const looksStampRef = useRef<{ stamp: string; count: number } | null>(null);
   const [depletedKey, setDepletedKey] = useState<string | null>(null);
   const [ranKey, setRanKey] = useState<string | null>(null);
   const [rulesNoteKey, setRulesNoteKey] = useState<string | null>(null);
@@ -236,6 +243,7 @@ export default function TodayPage() {
   const [stageIndex, setStageIndex] = useState(0);
   const [showItems, setShowItems] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [refiring, setRefiring] = useState(false);
   const [renders, setRenders] = useState<Record<string, StageRecord>>({});
   const rendersRef = useRef<Record<string, StageRecord>>({});
   rendersRef.current = renders;
@@ -247,9 +255,12 @@ export default function TodayPage() {
   ) => Promise<void>)
     | null
   >(null);
-  /** One quiet 30s render retry per outage look; cleared on unmount. */
+  /** Quiet outage retries (30s, 60s, 120s); timers cleared on unmount. */
   const retryTimers = useRef<number[]>([]);
-  const retriedKeys = useRef<Set<string>>(new Set());
+  const retryAttempts = useRef(new Map<string, number>());
+  /** Keys of the looks on the visible page; retries only fire for these. */
+  const pageKeysRef = useRef<Set<string>>(new Set());
+  const refireRef = useRef<((outfit: OutfitView, key: string, version: string) => Promise<boolean>) | null>(null);
   useEffect(() => {
     const timers = retryTimers.current;
     return () => {
@@ -269,6 +280,7 @@ export default function TodayPage() {
 
   // The cards on screen: exactly the pager's current page (at most 3).
   const page = pager ? currentPage(pager) : [];
+  pageKeysRef.current = new Set(page.map((outfit) => `${avatar?.version ?? "?"}|${outfit.key}`));
   const showShuffle = pager !== null && hasMore(pager);
   const showMoreIdeas = pager !== null && !hasMore(pager);
 
@@ -303,6 +315,25 @@ export default function TodayPage() {
   // older record without a state-clearing effect.
   const renderKey = (lookKey: string) => `${avatar?.version ?? "?"}|${lookKey}`;
 
+  /** Outage refires at 30s, 60s, 120s (max 3), visible page only. */
+  const armOutageRetry = useCallback((outfit: OutfitView, key: string, version: string) => {
+    const schedule = (attempt: number): void => {
+      if (attempt >= RETRY_DELAYS.length) return;
+      const timer = window.setTimeout(() => {
+        void (async () => {
+          // A swiped-away look waits for its return or the manual button.
+          if (!pageKeysRef.current.has(key)) return;
+          if (rendersRef.current[key]?.outage !== true) return;
+          retryAttempts.current.set(key, attempt + 1);
+          const ok = await refireRef.current?.(outfit, key, version);
+          if (!ok) schedule(attempt + 1);
+        })();
+      }, RETRY_DELAYS[attempt] as number);
+      retryTimers.current.push(timer);
+    };
+    schedule(retryAttempts.current.get(key) ?? 0);
+  }, []);
+
   // The staged look: exactly one spotlight look at a time.
   const staged = page.length > 0 ? page[Math.min(stageIndex, page.length - 1)] : undefined;
   const stagedCards = staged
@@ -335,6 +366,48 @@ export default function TodayPage() {
         // Private mode: city simply isn't remembered.
       }
     });
+  }, []);
+
+  async function readClosetVersion(): Promise<{ stamp: string; count: number } | null> {
+    try {
+      const res = await fetch("/api/closet/version", { cache: "no-store" });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { stamp?: unknown; count?: unknown };
+      if (typeof body.stamp !== "string" || typeof body.count !== "number") return null;
+      return { stamp: body.stamp, count: body.count };
+    } catch {
+      return null;
+    }
+  }
+
+  // On return to the tab, compare the closet version with the one the
+  // current looks were picked from. A mismatch shows a quiet refresh pill —
+  // never a popup, never an auto re-run.
+  useEffect(() => {
+    const check = () => {
+      if (!pagerRef.current) return;
+      void (async () => {
+        const version = await readClosetVersion();
+        if (!version) return;
+        const prev = looksStampRef.current;
+        if (!prev) {
+          looksStampRef.current = version;
+          return;
+        }
+        if (version.stamp !== prev.stamp || version.count !== prev.count) {
+          setClosetPill(true);
+        }
+      })();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
   }, []);
 
   // Restore the session's inputs + pager (e.g. back from /dress keeps results).
@@ -436,8 +509,8 @@ export default function TodayPage() {
         };
         if (!res.ok) {
           if (body.code === "no-avatar") return "no-avatar";
-          // Image outage: the flat-lay stands in with a calm note, and one
-          // quiet retry runs ~30s later. Never an error banner.
+          // Image outage: the flat-lay stands in with a calm note, and
+          // quiet retries refire at 30s/60s/120s. Never an error banner.
           const outage = body.code === META_UNAVAILABLE_CODE;
           const fallback: StageRecord = {
             url: null,
@@ -448,30 +521,7 @@ export default function TodayPage() {
           };
           const atVersion = avatar.version;
           setRenders((prev) => storeRender(prev, atVersion, key, fallback));
-          if (outage && !retriedKeys.current.has(key)) {
-            retriedKeys.current.add(key);
-            const timer = window.setTimeout(() => {
-              void (async () => {
-                // Only refire while the flat-lay stand-in is still current.
-                if (rendersRef.current[key]?.outage !== true) return;
-                try {
-                  const retry = await fetch("/api/render", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ itemIds: outfit.item_ids }),
-                  });
-                  const retryBody = (await retry.json()) as { url?: string | null };
-                  if (!retry.ok || !retryBody.url) return;
-                  const record: StageRecord = { url: retryBody.url, verified: false, invented: [] };
-                  setRenders((prev) => storeRender(prev, atVersion, key, record));
-                  await verifyLookRef.current?.(outfit, record, atVersion);
-                } catch {
-                  // The flat-lay stays; no error surfaces.
-                }
-              })();
-            }, 30_000);
-            retryTimers.current.push(timer);
-          }
+          if (outage) armOutageRetry(outfit, key, atVersion);
           return fallback;
         }
         const record = {
@@ -496,7 +546,7 @@ export default function TodayPage() {
         inflightRef.current.delete(key);
       }
     },
-    [avatar],
+    [avatar, armOutageRetry],
   );
 
   // Background verification for one look: on a real failure the route
@@ -544,6 +594,46 @@ export default function TodayPage() {
     [],
   );
   verifyLookRef.current = verifyLook;
+
+  /**
+   * One refire against /api/render: swaps the flat-lay for the image with
+   * the fade-in, then verifies in the background. True on success.
+   */
+  const refireRender = useCallback(
+    async (outfit: OutfitView, key: string, version: string): Promise<boolean> => {
+      if (rendersRef.current[key]?.outage !== true) return false;
+      try {
+        const retry = await fetch("/api/render", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ itemIds: outfit.item_ids }),
+        });
+        const retryBody = (await retry.json()) as { url?: string | null };
+        if (!retry.ok || !retryBody.url) return false;
+        const record: StageRecord = { url: retryBody.url, verified: false, invented: [] };
+        setRenders((prev) => storeRender(prev, version, key, record));
+        await verifyLookRef.current?.(outfit, record, version);
+        return true;
+      } catch {
+        // The flat-lay stays; no error surfaces.
+        return false;
+      }
+    },
+    [],
+  );
+  refireRef.current = refireRender;
+
+  /** Manual "Try on avatar" refire from the flat-lay. */
+  async function manualRefire() {
+    if (!staged || !avatar || refiring) return;
+    setRefiring(true);
+    try {
+      const ok = await refireRef.current?.(staged, renderKey(staged.key), avatar.version);
+      if (!ok) armOutageRetry(staged, renderKey(staged.key), avatar.version);
+    } finally {
+      setRefiring(false);
+    }
+  }
 
   // Render every look on the page in parallel (at most 3), then verify each
   // in the background. The user never waits on verification.
@@ -739,6 +829,11 @@ export default function TodayPage() {
       setWeather(nextWeather);
       setDressCode(nextDress);
       setStatus(pageStatus(started));
+      // The looks now match the current closet; the pill rests until it moves.
+      setClosetPill(false);
+      void readClosetVersion().then((version) => {
+        if (version) looksStampRef.current = version;
+      });
       return { outfits: currentPage(started), items, weather: nextWeather, dressCode: nextDress };
     } catch (err) {
       window.clearTimeout(hiccupTimer);
@@ -1146,6 +1241,21 @@ export default function TodayPage() {
       {getStale && canRun && !busy && (
         <p className="text-lg text-(--text-muted)">Change mood or occasion for new looks</p>
       )}
+      {closetPill && pager && !busy && (
+        <button
+          type="button"
+          onClick={() =>
+            void fetchOutfits([], "Getting your outfits…").then((run) => {
+              if (run && run.outfits.length > 0) {
+                speakOutfit(run.outfits[0], run.outfits.length, run.items, run.weather, run.dressCode);
+              }
+            })
+          }
+          className="min-h-11 self-start rounded-full border border-(--border) px-5 text-base font-semibold"
+        >
+          Your closet changed · Refresh looks
+        </button>
+      )}
 
       <p role="status" aria-live="polite" className="text-lg">
         {status}
@@ -1275,6 +1385,16 @@ export default function TodayPage() {
           )}
           {stagedRender && !stagedRender.url && stagedRender.note && (
             <p className="text-lg text-(--text-muted)">{stagedRender.note}</p>
+          )}
+          {stagedRender?.outage && (
+            <button
+              type="button"
+              disabled={refiring}
+              onClick={() => void manualRefire()}
+              className="min-h-14 self-start rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            >
+              {refiring ? "Trying…" : "Try on avatar"}
+            </button>
           )}
           {whenBits.length > 0 && (
             <p>

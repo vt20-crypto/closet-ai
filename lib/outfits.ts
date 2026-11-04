@@ -31,6 +31,11 @@ export interface ValidatedOutfit extends RawOutfit {
   key: string;
 }
 
+/** Pieces in the laundry sit out: hidden from coverage and outfit picks. */
+export function wearableItems<T extends { laundry?: boolean }>(items: T[]): T[] {
+  return items.filter((item) => !item.laundry);
+}
+
 export interface OutfitProblem {
   index: number;
   reasons: string[];

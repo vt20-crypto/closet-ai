@@ -115,10 +115,21 @@ export default function ItemEditor({ item, onSave, onClose }: ItemEditorProps) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
 
   // Native dialog: focus trapped, Esc closes, backdrop tap closes.
+  // Body scroll locks while open so only the sheet scrolls.
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog?.showModal();
-    return () => dialog?.close();
+    const root = document.documentElement;
+    const body = document.body;
+    const prevRoot = root.style.overflow;
+    const prevBody = body.style.overflow;
+    root.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    return () => {
+      dialog?.close();
+      root.style.overflow = prevRoot;
+      body.style.overflow = prevBody;
+    };
   }, []);
 
   const axes = allowedFitAxes(type || item.tags.type);
@@ -155,12 +166,31 @@ export default function ItemEditor({ item, onSave, onClose }: ItemEditorProps) {
       onClick={(event) => {
         if (event.target === dialogRef.current) dialogRef.current?.close();
       }}
-      className="fixed inset-x-0 bottom-0 m-0 mx-auto max-h-[85dvh] w-full max-w-2xl overflow-y-auto rounded-t-[20px] border border-(--border-soft) bg-(--surface) p-6 text-(--text) backdrop:bg-black/50"
+      className="fixed inset-x-0 bottom-0 m-0 mx-auto max-h-[90dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-[20px] border border-(--border-soft) bg-(--surface) p-6 pt-0 text-(--text) backdrop:bg-black/50"
     >
         <div className="flex flex-col gap-4">
-          <h2 id="item-editor-title" className="font-display text-2xl">
-            Edit {item.label}
-          </h2>
+          <div className="sticky top-0 -mx-6 bg-(--surface) px-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-4">
+            <div className="flex items-center gap-3">
+              <h2 id="item-editor-title" className="min-w-0 flex-1 truncate font-display text-2xl">
+                Edit {item.label}
+              </h2>
+              <button
+                type="button"
+                onClick={() => dialogRef.current?.close()}
+                className="min-h-11 shrink-0 rounded-full border border-(--border) px-5 text-base font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void save()}
+                className="min-h-11 shrink-0 rounded-full bg-(--primary) px-5 text-base font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
           <label className="flex flex-col gap-2 text-lg">
             Nickname (≤ 2 words)
             <input
@@ -213,23 +243,6 @@ export default function ItemEditor({ item, onSave, onClose }: ItemEditorProps) {
               {error}
             </p>
           )}
-          <div className="flex gap-3">
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => void save()}
-              className="min-h-14 flex-1 rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              onClick={() => dialogRef.current?.close()}
-              className="min-h-14 flex-1 rounded-full border border-(--border) px-6 text-lg font-semibold"
-            >
-              Cancel
-            </button>
-          </div>
         </div>
     </dialog>
   );

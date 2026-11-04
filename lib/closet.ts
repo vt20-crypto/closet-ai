@@ -25,6 +25,8 @@ export interface ClosetItem {
   createdAt: string;
   /** Last tag merge (e.g. the fit backfill); absent when never re-tagged. */
   updatedAt?: string;
+  /** True while the piece is in the laundry: hidden from outfit picks. */
+  laundry?: boolean;
 }
 
 export function newId(): string {

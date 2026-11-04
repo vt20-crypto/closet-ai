@@ -29,6 +29,13 @@ test("untouched fields keep their values", () => {
   assert.deepEqual(tags, CURRENT);
 });
 
+test("empty nickname clears it (fallback shows), long ones reject", () => {
+  const { tags, error } = validateItemEdit({ nickname: "  " }, CURRENT);
+  assert.equal(error, undefined);
+  assert.equal(tags?.nickname, "");
+  assert.match(validateItemEdit({ nickname: 7 }, CURRENT).error ?? "", /2 words/);
+});
+
 test("rejects long nicknames, empty types and out-of-range steppers", () => {
   assert.match(validateItemEdit({ nickname: "way too long nickname" }, CURRENT).error ?? "", /2 words/);
   assert.match(validateItemEdit({ nickname: "one two three" }, CURRENT).error ?? "", /2 words/);

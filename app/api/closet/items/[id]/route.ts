@@ -36,11 +36,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!item) return NextResponse.json({ error: "Unknown item." }, { status: 404 });
     const { tags, error } = validateItemEdit(body, item.tags);
     if (!tags) return NextResponse.json({ error }, { status: 400 });
+    if (body.laundry !== undefined && typeof body.laundry !== "boolean") {
+      return NextResponse.json({ error: "laundry must be true or false." }, { status: 400 });
+    }
     const updated: ClosetItem = {
       ...item,
       tags: { ...item.tags, ...tags },
       updatedAt: new Date().toISOString(),
     };
+    if (typeof body.laundry === "boolean") updated.laundry = body.laundry;
     await saveItem(updated, { allowOverwrite: true });
     return NextResponse.json({ item: updated });
   } catch (err) {
