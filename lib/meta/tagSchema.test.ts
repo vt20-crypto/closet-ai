@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  allowedFitAxes,
   fitCategoryForType,
   normalizeFitTags,
   TAG_SCHEMA,
@@ -124,5 +125,18 @@ describe("normalizeFitTags", () => {
       sleeve: "n/a",
       rise: "n/a",
     });
+  });
+});
+
+describe("allowedFitAxes", () => {
+  it("offers only the values valid for the garment type", () => {
+    assert.deepEqual(allowedFitAxes("jeans"), {
+      fit: ["skinny","slim","regular","straight","relaxed","loose","baggy","wide-leg","bootcut","flared"],
+      length: ["ankle", "full", "cropped"],
+      sleeve: [],
+      rise: ["low", "mid", "high"],
+    });
+    assert.deepEqual(allowedFitAxes("sneakers"), { fit: [], length: [], sleeve: [], rise: [] });
+    assert.deepEqual(allowedFitAxes("hoodie").sleeve, ["sleeveless", "short", "three-quarter", "long"]);
   });
 });

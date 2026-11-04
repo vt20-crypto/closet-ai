@@ -124,6 +124,32 @@ export async function listItems(): Promise<ClosetItem[]> {
 }
 
 /**
+ * Max updatedAt (falling back to createdAt) over a few ids. Render and
+ * outfit caches key on this stamp, so an edit busts stale looks without a
+ * full closet listing on every cache hit. Unknown ids contribute nothing
+ * (loadRenderInputs still rejects them as unknown).
+ */
+export async function closetStamp(ids: string[]): Promise<string> {
+  const stamps = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const page = await list({ prefix: `items/${id}.json` });
+        const blob = page.blobs.find((b) => b.pathname === itemJson(id));
+        if (!blob) return "";
+        const res = await fetch(blob.url, { cache: "no-store" });
+        if (!res.ok) return "";
+        const item = (await res.json()) as { updatedAt?: unknown; createdAt?: unknown };
+        const stamp = typeof item.updatedAt === "string" ? item.updatedAt : item.createdAt;
+        return typeof stamp === "string" ? stamp : "";
+      } catch {
+        return "";
+      }
+    }),
+  );
+  return stamps.reduce((max, stamp) => (stamp > max ? stamp : max), "");
+}
+
+/**
  * Move a candidate to items/: copy the PNG, write the item JSON with the new
  * cutout URL, then delete the candidate blobs.
  */

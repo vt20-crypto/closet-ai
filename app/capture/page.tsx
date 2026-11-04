@@ -5,13 +5,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
 import CropEditor from "./crop-editor";
+import ItemEditor, { type EditableItem } from "../item-editor";
 import { Sticker, Tape } from "../sticker";
 import { tapeLabel } from "@/lib/labels";
 import { createNDJSONParser } from "@/lib/ndjson";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 
-const MAX_FILES = 10;
+const MAX_FILES = 20;
 const MAX_DIM = 1600;
+
+/** One photo in the bulk add queue. */
+interface QueueItem {
+  id: string;
+  file: Blob;
+  name: string;
+  thumbUrl: string;
+  status: "queued" | "uploading" | "ready" | "scanning" | "done" | "failed";
+  photo?: Photo;
+  error?: string;
+}
 
 interface Photo {
   url: string;
@@ -43,7 +55,43 @@ interface Candidate {
     rejection_reason: string | null;
     /** Absent on items tagged before nicknames existed. */
     nickname?: string;
+    formality: number;
+    warmth: number;
+    fit: string;
+    length: string;
+    sleeve: string;
+    rise: string;
   } | null;
+}
+
+/** Sheet defaults for a candidate the tagger never reached. */
+function blankEditable(candidate: Candidate): EditableItem {
+  return {
+    id: candidate.id,
+    label: candidateTitle(candidate),
+    cutoutUrl: candidate.cutoutUrl,
+    tags: {
+      nickname: "",
+      type: candidate.nouns[0] ?? "garment",
+      primary_color: "unknown",
+      fit: "n/a",
+      length: "n/a",
+      sleeve: "n/a",
+      rise: "n/a",
+      formality: 3,
+      warmth: 3,
+    },
+  };
+}
+
+function candidateEditable(candidate: Candidate): EditableItem {
+  if (!candidate.tags) return blankEditable(candidate);
+  return {
+    id: candidate.id,
+    label: candidateTitle(candidate),
+    cutoutUrl: candidate.cutoutUrl,
+    tags: { ...candidate.tags },
+  };
 }
 
 /** Cleanup prompt for one photo family once every candidate is decided. */
@@ -57,7 +105,7 @@ const TAG_TIMEOUT_MS = 20_000;
 
 interface CropTarget {
   displayUrl: string;
-  source: { kind: "file"; file: File } | { kind: "photo"; photo: Photo };
+  source: { kind: "file"; file: File } | { kind: "photo"; photo: Photo } | { kind: "queue"; id: string };
 }
 
 function candidateTitle(candidate: Candidate): string {
@@ -77,12 +125,14 @@ function CandidateCard({
   locked,
   onKeep,
   onDiscard,
+  onEdit,
 }: {
   candidate: Candidate;
   keepLabel: string;
   locked: boolean;
   onKeep: (id: string) => void;
   onDiscard: (id: string) => void;
+  onEdit: (id: string) => void;
 }) {
   const title = candidateTitle(candidate);
   const tape =
@@ -122,6 +172,15 @@ function CandidateCard({
           <button
             type="button"
             disabled={locked || candidate.tagging}
+            onClick={() => onEdit(candidate.id)}
+            aria-label={`Edit ${title}`}
+            className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            disabled={locked || candidate.tagging}
             onClick={() => onDiscard(candidate.id)}
             aria-label={`Discard ${title}`}
             className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
@@ -155,14 +214,20 @@ async function resizeToJpeg(source: Blob): Promise<Blob> {
 }
 
 export default function CapturePage() {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const takeRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("No photos yet. Add clothes to start your closet.");
+  /** Bulk add queue: resize + upload, then scan one photo at a time. */
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const queueRef = useRef<QueueItem[]>([]);
+  queueRef.current = queue;
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [meta, setMeta] = useState<Record<string, PhotoMeta>>({});
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [acting, setActing] = useState(false);
   const [cropTarget, setCropTarget] = useState<CropTarget | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -260,15 +325,17 @@ export default function CapturePage() {
     label: string,
     parentOverride?: string,
     isRetry = false,
+    quiet = false,
   ): Promise<number> {
-    setStatus(`Finding clothes in ${label}…`);
+    // Queue scans stay quiet: the queue progress line is the status.
+    const say = (message: string): void => {
+      if (!quiet) setStatus(message);
+    };
+    say(`Finding clothes in ${label}…`);
     setRetryAction(null);
     setDoneCard(null);
     roundAdded.current = 0;
-    const hiccupTimer = window.setTimeout(
-      () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
-      8000,
-    );
+    const hiccupTimer = window.setTimeout(() => say(META_HICCUP_MESSAGE), 8000);
     const rootPath = parentOverride ?? rootOf(photo.pathname);
     const rootPhoto = photos.find((p) => p.pathname === rootPath) ?? photo;
     let received = 0;
@@ -304,7 +371,7 @@ export default function CapturePage() {
           error?: string;
         };
         if (typed.event === "status" && typed.status === "retrying") {
-          setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+          say(META_HICCUP_MESSAGE);
           return;
         }
         if (typed.event === "error") {
@@ -337,13 +404,13 @@ export default function CapturePage() {
         return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
       });
       if (received === 0) {
-        setStatus(
+        say(
           streamFailed
             ? `${label} failed: the scan ended before any clothes arrived.`
             : `No garments found in ${label}. Try a plainer background and better light.`,
         );
       } else {
-        setStatus(`Found ${received} item${received === 1 ? "" : "s"} in ${label}.`);
+        say(`Found ${received} item${received === 1 ? "" : "s"} in ${label}.`);
       }
       trackPrompt(rootPhoto, received);
       await refresh();
@@ -355,12 +422,12 @@ export default function CapturePage() {
         return prev.map((c) => (c.tagging ? { ...c, tagging: false } : c));
       });
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
-        setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+        say(META_HICCUP_MESSAGE);
         await new Promise((resolve) => setTimeout(resolve, 10_000));
-        return scanPhoto(photo, label, parentOverride, true);
+        return scanPhoto(photo, label, parentOverride, true, quiet);
       }
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
-        setStatus("Meta's AI is still having trouble.");
+        say("Your stylist is still taking a breather.");
         setRetryAction(() => () => {
           setRetryAction(null);
           void scanPhoto(photo, label, parentOverride);
@@ -369,7 +436,7 @@ export default function CapturePage() {
         return 0;
       }
       const message = err instanceof Error ? err.message : "Segmentation failed.";
-      setStatus(received > 0 ? `Scan incomplete — showing what arrived. ${message}` : `${label} failed: ${message}`);
+      say(received > 0 ? `Scan incomplete — showing what arrived. ${message}` : `${label} failed: ${message}`);
       await refresh();
       return received;
     }
@@ -395,8 +462,15 @@ export default function CapturePage() {
   async function finishCrop(cropped: Blob | null) {
     const target = cropTarget;
     setCropTarget(null);
-    if (target) URL.revokeObjectURL(target.displayUrl);
+    // Queue thumbs stay alive for the queue list; other URLs are one-shot.
+    if (target && target.source.kind !== "queue") URL.revokeObjectURL(target.displayUrl);
     if (!target) return;
+    if (target.source.kind === "queue") {
+      // Crop only swaps the file; the upload turn picks it up. Never blocks.
+      if (cropped) setQueueItem(target.source.id, { file: cropped });
+      else setStatus("Crop skipped.");
+      return;
+    }
     if (target.source.kind === "file") {
       setBusy(true);
       try {
@@ -409,7 +483,6 @@ export default function CapturePage() {
         setStatus(`Photo 1 failed: ${message}`);
       } finally {
         setBusy(false);
-        if (inputRef.current) inputRef.current.value = "";
       }
       return;
     }
@@ -447,44 +520,112 @@ export default function CapturePage() {
     }
   }
 
-  async function handleFiles(files: FileList | null) {
+  function setQueueItem(id: string, patch: Partial<QueueItem>) {
+    setQueue((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+  }
+
+  /** Rear camera: one photo, with the optional crop step before upload. */
+  async function handleTakeFile(file: File | undefined) {
+    if (!file || busy || cropTarget) return;
+    setCropTarget({ displayUrl: URL.createObjectURL(file), source: { kind: "file", file } });
+    setStatus("Optional: drag to crop around the garment, then Use crop — or Skip.");
+    if (takeRef.current) takeRef.current.value = "";
+  }
+
+  /** Upload picker: up to 20 photos into the queue, then upload + scan. */
+  async function handleUploadFiles(files: FileList | null) {
     if (!files || files.length === 0 || busy || cropTarget) return;
     const batch = Array.from(files).slice(0, MAX_FILES);
     if (files.length > MAX_FILES) {
       setStatus(`Taking the first ${MAX_FILES} of ${files.length} photos.`);
     }
-    if (batch.length === 1 && batch[0]) {
-      // Single photo: offer the optional crop step before upload.
-      const file = batch[0];
-      setCropTarget({ displayUrl: URL.createObjectURL(file), source: { kind: "file", file } });
-      setStatus("Optional: drag to crop around the garment, then Use crop — or Skip.");
-      if (inputRef.current) inputRef.current.value = "";
-      return;
-    }
+    if (uploadRef.current) uploadRef.current.value = "";
+    const items: QueueItem[] = batch.map((file, index) => ({
+      id: `${Date.now()}-${index}`,
+      file,
+      name: file.name || `Photo ${index + 1}`,
+      thumbUrl: URL.createObjectURL(file),
+      status: "queued",
+    }));
+    setQueue(items);
     setBusy(true);
     try {
-      const uploaded: Photo[] = [];
-      for (const [index, file] of batch.entries()) {
-        setStatus(`Uploading ${index + 1} of ${batch.length}…`);
+      // Uploads run in order; a queued photo can still be cropped meanwhile.
+      for (const item of items) {
+        const current = queueRef.current.find((entry) => entry.id === item.id);
+        if (!current || current.status !== "queued") continue;
+        setQueueItem(item.id, { status: "uploading", error: undefined });
         try {
-          const jpeg = await resizeToJpeg(file);
-          const photo = await uploadSingle(jpeg, `Photo ${index + 1}`);
-          if (photo) uploaded.push(photo);
+          const jpeg = await resizeToJpeg(current.file);
+          const photo = await uploadSingle(jpeg, current.name);
+          if (!photo) throw new Error("Upload failed.");
+          setQueueItem(item.id, { status: "ready", photo });
         } catch (err) {
           const message = err instanceof Error ? err.message : "Upload failed.";
-          setStatus(`Photo ${index + 1} failed: ${message}`);
+          setQueueItem(item.id, { status: "failed", error: message });
         }
       }
       await refresh();
-
-      // New uploads flow straight into segment, one photo at a time.
-      for (const [index, photo] of uploaded.entries()) {
-        await scanPhoto(photo, `photo ${index + 1} of ${uploaded.length}`);
-      }
+      // Scans run two at a time; every found piece lands in one review list.
+      const ready = queueRef.current.filter((entry) => entry.status === "ready");
+      let cursor = 0;
+      const scanNext = async (): Promise<void> => {
+        for (;;) {
+          const index = cursor++;
+          if (index >= ready.length) return;
+          const entry = ready[index];
+          if (!entry?.photo) continue;
+          setQueueItem(entry.id, { status: "scanning", error: undefined });
+          await scanPhoto(entry.photo, `photo ${index + 1} of ${ready.length}`, undefined, false, true);
+          const latest = await refresh();
+          const done = !!latest?.meta?.[entry.photo.pathname];
+          setQueueItem(entry.id, done ? { status: "done" } : { status: "failed", error: "Scan failed." });
+        }
+      };
+      await Promise.all([scanNext(), scanNext()]);
+      setStatus("Queue finished. Tap Keep to add pieces to your closet.");
     } finally {
       setBusy(false);
-      if (inputRef.current) inputRef.current.value = "";
     }
+  }
+
+  /** Retry one failed queue photo (upload first when it never uploaded). */
+  async function retryQueueItem(id: string) {
+    const entry = queueRef.current.find((item) => item.id === id);
+    if (!entry || busy || entry.status === "uploading" || entry.status === "scanning") return;
+    setBusy(true);
+    try {
+      let photo: Photo | undefined = entry.photo;
+      if (!photo) {
+        setQueueItem(id, { status: "uploading", error: undefined });
+        const jpeg = await resizeToJpeg(entry.file);
+        const uploaded = await uploadSingle(jpeg, entry.name);
+        if (!uploaded) throw new Error("Upload failed.");
+        photo = uploaded;
+        setQueueItem(id, { status: "ready", photo });
+        await refresh();
+      }
+      setQueueItem(id, { status: "scanning", error: undefined });
+      await scanPhoto(photo, entry.name, undefined, false, true);
+      const latest = await refresh();
+      const done = !!latest?.meta?.[photo.pathname];
+      setQueueItem(id, done ? { status: "done" } : { status: "failed", error: "Scan failed." });
+      setStatus(done ? "Scan finished. Tap Keep to add pieces to your closet." : "Scan failed again.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed.";
+      setQueueItem(id, { status: "failed", error: message });
+      setStatus(`Retry failed: ${message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Crop one queued photo (before its upload turn); never blocks the queue. */
+  function openQueueCrop(id: string) {
+    const entry = queueRef.current.find((item) => item.id === id);
+    if (!entry || entry.status !== "queued") return;
+    setCropTarget({ displayUrl: entry.thumbUrl, source: { kind: "queue", id } });
+    setStatus("Drag to crop around the garment, then Use crop — or Skip.");
   }
 
   async function scanAll() {
@@ -627,6 +768,19 @@ export default function CapturePage() {
     await refresh();
   }
 
+  /** Persist an edit-sheet draft on a review card; the route re-validates. */
+  async function saveCandidateEdit(id: string, draft: Record<string, unknown>) {
+    const res = await fetch(`/api/closet/candidates/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    const body = (await res.json()) as { candidate?: Candidate; error?: string };
+    if (!res.ok || !body.candidate) throw new Error(body.error ?? `HTTP ${res.status}`);
+    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...body.candidate as Candidate, tagging: false } : c)));
+    setStatus("Saved. Keep it when it looks right.");
+  }
+
   async function keepAll() {
     const acceptedIds = candidatesRef.current
       .filter((c) => !c.tagging && (!c.tags || c.tags.is_single_garment))
@@ -667,29 +821,48 @@ export default function CapturePage() {
   /** One clear state at a time: review, done, or the photo lists. */
   const reviewing = candidates.length > 0;
   const listsVisible = !reviewing && !doneCard;
+  const editingCandidate = candidates.find((c) => c.id === editingId) ?? null;
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
       <h1 className="font-display text-4xl">Capture</h1>
       <p>Photograph one garment at a time against a plain background.</p>
       <input
-        ref={inputRef}
-        id="clothes-input"
+        ref={takeRef}
+        id="take-photo-input"
         type="file"
         accept="image/*"
         capture="environment"
+        className="sr-only"
+        onChange={(event) => void handleTakeFile(event.target.files?.[0])}
+      />
+      <input
+        ref={uploadRef}
+        id="upload-photos-input"
+        type="file"
+        accept="image/*"
         multiple
         className="sr-only"
-        onChange={(event) => void handleFiles(event.target.files)}
+        onChange={(event) => void handleUploadFiles(event.target.files)}
       />
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => inputRef.current?.click()}
-        className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
-      >
-        {busy ? "Working…" : "Add clothes"}
-      </button>
+      <div className="flex flex-col gap-3 min-[480px]:flex-row">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => takeRef.current?.click()}
+          className="min-h-16 flex-1 rounded-full bg-(--primary) px-6 text-xl font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+        >
+          {busy ? "Working…" : "Take photo"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => uploadRef.current?.click()}
+          className="min-h-16 flex-1 rounded-full border border-(--border) px-6 text-xl font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+        >
+          Upload photos
+        </button>
+      </div>
       <p role="status" aria-live="polite" className="text-lg">
         {status}
       </p>
@@ -705,6 +878,76 @@ export default function CapturePage() {
         >
           Try again
         </button>
+      )}
+      {queue.length > 0 && (
+        <section aria-label="Photo queue" className="flex flex-col gap-3">
+          <h2 className="font-display text-2xl">Adding photos</h2>
+          <p role="status" className="text-lg">
+            {queue.some((entry) => entry.status === "uploading")
+              ? `Uploading ${queue.filter((entry) => ["ready", "scanning", "done", "failed"].includes(entry.status)).length + 1} of ${queue.length}…`
+              : queue.some((entry) => entry.status === "scanning" || entry.status === "ready")
+                ? `Scanning ${queue.filter((entry) => entry.status === "done" || entry.status === "failed").length + 1} of ${queue.length}…`
+                : `Scanned ${queue.filter((entry) => entry.status === "done").length} of ${queue.length}.`}
+          </p>
+          <ul className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {queue.map((entry) => (
+              <li
+                key={entry.id}
+                className="flex flex-col gap-2 rounded-2xl border border-(--border-soft) bg-(--surface-2) p-3"
+              >
+                <img
+                  src={entry.thumbUrl}
+                  alt={entry.name}
+                  loading="lazy"
+                  className="aspect-square w-full rounded-xl object-cover"
+                />
+                <p className="min-h-6 text-base text-(--text-muted)" aria-live="polite">
+                  {entry.status === "failed"
+                    ? (entry.error ?? "Failed.")
+                    : entry.status === "queued"
+                      ? "Waiting…"
+                      : entry.status === "uploading"
+                        ? "Uploading…"
+                        : entry.status === "ready"
+                          ? "Uploaded."
+                          : entry.status === "scanning"
+                            ? "Scanning…"
+                            : "Done."}
+                </p>
+                {entry.status === "queued" && (
+                  <button
+                    type="button"
+                    onClick={() => openQueueCrop(entry.id)}
+                    aria-label={`Crop ${entry.name}`}
+                    className="min-h-11 rounded-full border border-(--border) text-base font-semibold"
+                  >
+                    Crop
+                  </button>
+                )}
+                {entry.status === "failed" && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void retryQueueItem(entry.id)}
+                    aria-label={`Retry ${entry.name}`}
+                    className="min-h-11 rounded-full border border-(--border) text-base font-semibold disabled:text-(--disabled-text)"
+                  >
+                    Retry
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {queue.every((entry) => entry.status === "done" || entry.status === "failed") && (
+            <button
+              type="button"
+              onClick={() => setQueue([])}
+              className="min-h-11 self-start rounded-full border border-(--border) px-6 text-base font-semibold"
+            >
+              Clear list
+            </button>
+          )}
+        </section>
       )}
       {cropTarget && (
         <CropEditor
@@ -738,6 +981,7 @@ export default function CapturePage() {
                 locked={locked}
                 onKeep={(id) => void keep(id)}
                 onDiscard={(id) => void discard(id)}
+              onEdit={(id) => setEditingId(id)}
               />
             ))}
           </ul>
@@ -755,6 +999,7 @@ export default function CapturePage() {
                     locked={locked}
                     onKeep={(id) => void keep(id)}
                     onDiscard={(id) => void discard(id)}
+                    onEdit={(id) => setEditingId(id)}
                   />
                 ))}
               </ul>
@@ -826,7 +1071,7 @@ export default function CapturePage() {
               type="button"
               onClick={() => {
                 setDoneCard(null);
-                inputRef.current?.click();
+                takeRef.current?.click();
               }}
               className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
             >
@@ -964,6 +1209,13 @@ export default function CapturePage() {
             })}
           </ul>
         </section>
+      )}
+      {editingCandidate && (
+        <ItemEditor
+          item={candidateEditable(editingCandidate)}
+          onSave={(id, draft) => saveCandidateEdit(id, draft)}
+          onClose={() => setEditingId(null)}
+        />
       )}
     </main>
   );

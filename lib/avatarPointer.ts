@@ -52,6 +52,28 @@ export async function writeAvatarPointer(
   await writeJsonToStore(store, pointerPath(pointer.version), pointer);
 }
 
+const CANDIDATE_PREFIX = "avatar/candidate-";
+
+/** Candidate paths are unguessable (`avatar/candidate-<uuid>.<ext>`). */
+export function isCandidatePath(pathname: string): boolean {
+  if (!pathname.startsWith(CANDIDATE_PREFIX) || pathname.includes("/", CANDIDATE_PREFIX.length)) {
+    return false;
+  }
+  return /\.(png|webp|jpg)$/.test(pathname);
+}
+
+/**
+ * Delete unfinished redo candidates (leaving without choosing = Cancel).
+ * Keeps one path when it just became the avatar.
+ */
+export async function deleteCandidates(store: BlobStore, keepPath?: string): Promise<void> {
+  const entries = await store.listBlobs(CANDIDATE_PREFIX);
+  const stale = entries
+    .map((entry) => entry.pathname)
+    .filter((pathname) => isCandidatePath(pathname) && pathname !== keepPath);
+  if (stale.length > 0) await store.delBlobs(stale);
+}
+
 /** Delete every pointer file except the current one. */
 export async function deleteOldPointers(store: BlobStore, keepPath: string): Promise<void> {
   const entries = await store.listBlobs(POINTER_PREFIX);

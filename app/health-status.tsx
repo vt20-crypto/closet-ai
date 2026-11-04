@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 type State =
   | { status: "loading" }
-  | { status: "ok"; latencyMs: number; model: string; cached: boolean }
+  | { status: "ok"; latencyMs: number; cached: boolean }
   | { status: "error"; message: string };
 
 export default function HealthStatus() {
@@ -28,7 +28,6 @@ export default function HealthStatus() {
           setState({
             status: "ok",
             latencyMs: body.latencyMs ?? 0,
-            model: body.model ?? "muse-spark-1.3",
             cached: body.cached ?? false,
           });
         } else {
@@ -48,10 +47,10 @@ export default function HealthStatus() {
   return (
     <div className="flex flex-wrap items-center gap-3">
       <p role="status" className="text-base">
-        {state.status === "loading" && "Checking model API…"}
+        {state.status === "loading" && "Checking your stylist…"}
         {state.status === "ok" &&
-          `Model API: live (${state.model}, ${state.latencyMs} ms${state.cached ? ", cached" : ""})`}
-        {state.status === "error" && `Model API: unreachable (${state.message})`}
+          `Your stylist is ready (${state.latencyMs} ms${state.cached ? ", cached" : ""})`}
+        {state.status === "error" && `Your stylist is unreachable (${state.message})`}
       </p>
       {state.status !== "loading" && (
         <button

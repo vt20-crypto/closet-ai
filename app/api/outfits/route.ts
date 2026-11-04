@@ -116,6 +116,11 @@ export async function POST(request: Request) {
     // Outfit-response cache (30 min). The key ignores excludes: cached sets
     // are filtered per request, and only exclude-free responses are stored.
     const latestCreatedAt = items.reduce((m, item) => (item.createdAt > m ? item.createdAt : m), "");
+    // Edits bump updatedAt: the newest change joins the key so edited items bust the cache.
+    const latestChange = items.reduce(
+      (m, item) => ((item.updatedAt ?? item.createdAt) > m ? (item.updatedAt ?? item.createdAt) : m),
+      latestCreatedAt,
+    );
     const locKey =
       lat !== null && lon !== null ? `${lat.toFixed(2)},${lon.toFixed(2)}` : `city:${(city ?? "").toLowerCase()}`;
     // Style profile + feedback shape the ranking, so they join the key.
@@ -139,7 +144,7 @@ export async function POST(request: Request) {
         ot: occasionText,
         d: destination,
         loc: locKey,
-        c: `${latestCreatedAt}:${items.length}`,
+        c: `${latestChange}:${items.length}`,
         day: new Date().toISOString().slice(0, 10),
         when: dateISO,
         tod: timeOfDay,

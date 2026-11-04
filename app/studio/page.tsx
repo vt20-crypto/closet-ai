@@ -11,7 +11,7 @@ const BUILDS = ["slim", "average", "athletic", "curvy", "broad"] as const;
 const VIBES: Vibe[] = ["playful", "minimal", "edgy", "classic"];
 
 const STAGES = ["Sketching you…", "Adding your style…", "Finishing touches…"];
-const IMAGE_BUSY_MESSAGE = "Meta's image service is busy. Try again in a minute.";
+const AVATAR_BUSY_MESSAGE = "We couldn't finish your avatar this time. Your photo is still here - tap Try again.";
 
 /** Downscale to a ≤1024px JPEG data URL in the browser; never uploaded as-is. */
 async function resizeToDataUrl(source: Blob): Promise<string> {
@@ -118,7 +118,33 @@ export default function StudioPage() {
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState<"selfie" | "fullbody" | null>(null);
   const [showForm, setShowForm] = useState(true);
+  /** Redo mode: Create generates a candidate for the compare screen. */
+  const [redoMode, setRedoMode] = useState(false);
+  const [candidate, setCandidate] = useState<{ url: string; path: string } | null>(null);
+  const [usage, setUsage] = useState<{ remaining: number; total: number; resetAt: string | null } | null>(null);
   const timerRef = useRef<number | null>(null);
+  const confirmRef = useRef<HTMLDialogElement | null>(null);
+
+  /** Usage is a hint; the server enforces the cap. Null when unreadable. */
+  async function fetchUsage(): Promise<{
+    remaining: number;
+    total: number;
+    resetAt: string | null;
+  } | null> {
+    try {
+      const res = await fetch("/api/avatar/usage", { cache: "no-store" });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { remaining?: number; total?: number; resetAt?: string | null };
+      return { remaining: body.remaining ?? 3, total: body.total ?? 3, resetAt: body.resetAt ?? null };
+    } catch {
+      return null;
+    }
+  }
+
+  async function refreshUsage() {
+    const next = await fetchUsage();
+    if (next) setUsage(next);
+  }
 
   // Show the current avatar (if any) with a Redo option.
   useEffect(() => {
@@ -136,6 +162,10 @@ export default function StudioPage() {
       } catch {
         // Studio works without loading the current avatar.
       }
+    })();
+    (async () => {
+      const next = await fetchUsage();
+      if (!cancelled && next) setUsage(next);
     })();
     return () => {
       cancelled = true;
@@ -166,7 +196,12 @@ export default function StudioPage() {
     }
   }
 
-  async function createAvatar() {
+  function formatResetDate(resetAt: string): string {
+    return new Date(resetAt).toLocaleDateString("en-US", { month: "long", day: "numeric" });
+  }
+
+  /** Create directly, or into a candidate when redoing (compare screen). */
+  async function createAvatar(asCandidate: boolean) {
     if (!selfieUrl || busy) return;
     setBusy(true);
     setStage(0);
@@ -176,7 +211,7 @@ export default function StudioPage() {
       setStage((s) => Math.min(s + 1, STAGES.length - 1));
     }, 4000);
     try {
-      const res = await fetch("/api/avatar", {
+      const res = await fetch(asCandidate ? "/api/avatar/candidate" : "/api/avatar", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -193,13 +228,19 @@ export default function StudioPage() {
         contentType.includes("application/json")
           ? await res.json()
           : null
-      ) as { url?: string; error?: string; code?: string } | null;
+      ) as { url?: string; path?: string; error?: string; code?: string } | null;
       if (!res.ok || !body?.url) {
-        if (body?.code === META_UNAVAILABLE_CODE) throw new Error(IMAGE_BUSY_MESSAGE);
+        if (body?.code === META_UNAVAILABLE_CODE) throw new Error(AVATAR_BUSY_MESSAGE);
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
-      setAvatarUrl(body.url);
-      setShowForm(false);
+      if (asCandidate && body.path) {
+        setCandidate({ url: body.url, path: body.path });
+      } else {
+        setAvatarUrl(body.url);
+        setShowForm(false);
+        setRedoMode(false);
+      }
+      void refreshUsage();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Avatar creation failed.");
     } finally {
@@ -209,6 +250,50 @@ export default function StudioPage() {
     }
   }
 
+  /** Keep new: swap the pointer, then the old avatar file is deleted server-side. */
+  async function keepCandidate() {
+    if (!candidate || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/avatar/keep", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: candidate.path, url: candidate.url }),
+      });
+      const body = (await res.json()) as { url?: string; error?: string };
+      if (!res.ok || !body.url) throw new Error(body.error ?? `HTTP ${res.status}`);
+      setAvatarUrl(body.url);
+      setCandidate(null);
+      setRedoMode(false);
+      setShowForm(false);
+      void refreshUsage();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the new avatar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Cancel: delete the candidate, keep the current avatar. */
+  async function cancelCandidate() {
+    if (candidate) {
+      try {
+        await fetch("/api/avatar/candidate", {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: candidate.path }),
+        });
+      } catch {
+        // The next Studio load cleans orphans anyway.
+      }
+    }
+    setCandidate(null);
+    setRedoMode(false);
+    setShowForm(false);
+    setError("");
+  }
+
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 p-6 md:max-w-[960px]">
       <h1 className="font-display text-4xl">Avatar Studio</h1>
@@ -216,7 +301,56 @@ export default function StudioPage() {
         Your photos are only used to create your avatar and are never stored.
       </p>
 
-      {avatarUrl && !showForm ? (
+      {candidate && avatarUrl ? (
+        <section aria-label="Choose your avatar" className="flex flex-col gap-4">
+          <h2 className="font-display text-2xl">Keep the new look?</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <figure className="flex flex-col gap-2">
+              <span className="flex aspect-[2/3] w-full items-center justify-center overflow-hidden rounded-[20px] border border-(--border-soft) bg-(--surface-2)">
+                <img src={avatarUrl} alt="Your current avatar" className="h-full w-full object-cover" />
+              </span>
+              <figcaption className="text-center text-lg text-(--text-muted)">Current</figcaption>
+            </figure>
+            <figure className="flex flex-col gap-2">
+              <span className="flex aspect-[2/3] w-full items-center justify-center overflow-hidden rounded-[20px] border border-(--border-soft) bg-(--surface-2)">
+                <img src={candidate.url} alt="New avatar candidate" className="h-full w-full object-cover" />
+              </span>
+              <figcaption className="text-center text-lg text-(--text-muted)">New</figcaption>
+            </figure>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void keepCandidate()}
+            className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+          >
+            {busy ? "Saving…" : "Keep new"}
+          </button>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void createAvatar(true)}
+              className="min-h-14 flex-1 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            >
+              Try again
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void cancelCandidate()}
+              className="min-h-14 flex-1 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            >
+              Cancel
+            </button>
+          </div>
+          {error && (
+            <p role="alert" className="text-lg">
+              {error}
+            </p>
+          )}
+        </section>
+      ) : avatarUrl && !showForm ? (
         <section aria-label="Your avatar" className="flex flex-col items-center gap-4">
           <span className="flex aspect-[2/3] w-full max-w-xs items-center justify-center overflow-hidden rounded-[20px] border border-(--border-soft) bg-(--surface-2)">
             <img src={avatarUrl} alt="Your stylized avatar" className="h-full w-full object-cover" />
@@ -225,13 +359,18 @@ export default function StudioPage() {
             <button
               type="button"
               onClick={() => {
-                setShowForm(true);
-                setError("");
+                void refreshUsage();
+                confirmRef.current?.showModal();
               }}
               className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
             >
               Redo
             </button>
+            {usage && (
+              <p className="text-center text-base text-(--text-muted)">
+                {usage.remaining} of {usage.total} new avatars left this week.
+              </p>
+            )}
             <Link
               href="/style"
               className="flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
@@ -333,10 +472,10 @@ export default function StudioPage() {
           <button
             type="button"
             disabled={busy || !selfieUrl || processing !== null}
-            onClick={() => void createAvatar()}
+            onClick={() => void createAvatar(redoMode)}
             className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
           >
-            {busy ? STAGES[stage] : "Create my avatar"}
+            {busy ? STAGES[stage] : redoMode ? "Create new avatar" : "Create my avatar"}
           </button>
           {busy && (
             <span role="status" aria-live="polite" className="sr-only">
@@ -350,6 +489,55 @@ export default function StudioPage() {
           )}
         </section>
       )}
+      <dialog
+        ref={confirmRef}
+        aria-labelledby="redo-title"
+        onClick={(event) => {
+          if (event.target === confirmRef.current) confirmRef.current?.close();
+        }}
+        className="m-auto w-[min(90vw,24rem)] rounded-[20px] border border-(--border-soft) bg-(--surface) p-6 text-(--text) shadow-[0_10px_24px_var(--shadow)] backdrop:bg-black/50"
+      >
+        <div className="flex flex-col gap-4">
+          <h2 id="redo-title" className="font-display text-2xl">
+            Create a new avatar?
+          </h2>
+          {usage && usage.remaining > 0 ? (
+            <p className="text-lg">
+              This replaces your current one. You have {usage.remaining} of {usage.total} redos left
+              this week.
+            </p>
+          ) : (
+            <p className="text-lg">
+              {usage?.resetAt
+                ? `You can create a new avatar again on ${formatResetDate(usage.resetAt)}.`
+                : "You've used this week's redos."}
+            </p>
+          )}
+          <div className="flex gap-3">
+            {usage && usage.remaining > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  confirmRef.current?.close();
+                  setRedoMode(true);
+                  setShowForm(true);
+                  setError("");
+                }}
+                className="min-h-14 flex-1 rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
+              >
+                Continue
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => confirmRef.current?.close()}
+              className="min-h-14 flex-1 rounded-full border border-(--border) px-6 text-lg font-semibold"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </dialog>
     </main>
   );
 }

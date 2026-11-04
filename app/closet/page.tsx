@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { tapeLabel } from "@/lib/labels";
 
+import ItemEditor, { type EditableItem } from "../item-editor";
 import { Sticker, Tape } from "../sticker";
 
 interface ClosetItem {
@@ -28,6 +29,28 @@ interface ClosetItem {
     nickname?: string;
     /** Absent on items tagged before fit details existed. */
     fit?: string;
+    length?: string;
+    sleeve?: string;
+    rise?: string;
+  };
+}
+
+function toEditable(item: ClosetItem): EditableItem {
+  return {
+    id: item.id,
+    label: `${item.tags.primary_color} ${item.tags.type}`,
+    cutoutUrl: item.cutoutUrl,
+    tags: {
+      nickname: item.tags.nickname ?? "",
+      type: item.tags.type,
+      primary_color: item.tags.primary_color,
+      fit: item.tags.fit ?? "n/a",
+      length: item.tags.length ?? "n/a",
+      sleeve: item.tags.sleeve ?? "n/a",
+      rise: item.tags.rise ?? "n/a",
+      formality: item.tags.formality,
+      warmth: item.tags.warmth,
+    },
   };
 }
 
@@ -37,6 +60,7 @@ export default function ClosetPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [retagging, setRetagging] = useState(false);
+  const [editing, setEditing] = useState<ClosetItem | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +129,19 @@ export default function ClosetPage() {
     } finally {
       setRetagging(false);
     }
+  }
+
+  /** Persist an edit-sheet draft; the route re-validates every field. */
+  async function saveEdit(id: string, draft: Record<string, unknown>) {
+    const res = await fetch(`/api/closet/items/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    const body = (await res.json()) as { item?: ClosetItem; error?: string };
+    if (!res.ok || !body.item) throw new Error(body.error ?? `HTTP ${res.status}`);
+    setItems((prev) => prev.map((entry) => (entry.id === id ? body.item as ClosetItem : entry)));
+    setStatus("Saved. Outfit picks will use the new details.");
   }
 
   const needsFit = items.some((item) => !item.tags.fit);
@@ -203,6 +240,14 @@ export default function ClosetPage() {
                     </div>
                   </dl>
                   <div className="flex gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditing(item)}
+                      aria-label={`Edit ${item.tags.type} in ${item.tags.primary_color}`}
+                      className="min-h-12 flex-1 rounded-full border border-(--border) px-4 text-lg font-semibold"
+                    >
+                      Edit
+                    </button>
                     {confirming === item.id ? (
                       <>
                         <button
@@ -242,6 +287,13 @@ export default function ClosetPage() {
           </ul>
         </section>
       ))}
+      {editing && (
+        <ItemEditor
+          item={toEditable(editing)}
+          onSave={(id, draft) => saveEdit(id, draft)}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </main>
   );
 }

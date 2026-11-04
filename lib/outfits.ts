@@ -86,8 +86,8 @@ const BASE_TOP_WORDS = [
 
 const MID_LAYER_WORDS = ["cardigan", "sweater", "hoodie", "sweatshirt", "overshirt", "vest", "fleece"];
 
-/** Base tops a mid layer may sit on: plain shirts, never knitwear. */
-const MID_BASE_WORDS = ["tshirt", "tee", "shirt", "tank", "polo", "turtleneck"];
+/** Base tops a mid layer may sit on: plain shirts and blouses, never knitwear. */
+const MID_BASE_WORDS = ["tshirt", "tee", "shirt", "blouse", "tank", "polo", "turtleneck", "henley"];
 
 function includesWord(cleaned: string, words: string[]): boolean {
   return words.some((word) => cleaned.includes(word));
@@ -273,7 +273,7 @@ export function validateOutfits(input: ValidationInput): {
         slots.top.length === 1 &&
         !midAllowedOver(slots.top[0]?.tags.type ?? "")
       ) {
-        reasons.push("a mid layer needs a tee, tank, shirt, polo or turtleneck base");
+        reasons.push("a mid layer needs a shirt-like base (tee, blouse, polo…), never knitwear");
       }
       const seen = new Map<string, string[]>();
       for (const item of matched) {

@@ -3,6 +3,7 @@ import { put } from "@vercel/blob";
 
 import { readAvatarPointer } from "@/lib/avatarPointer";
 import { getBlobStore, readCache, writeCache } from "@/lib/cache";
+import { closetStamp } from "@/lib/closet";
 import { editImage } from "@/lib/meta/image";
 import {
   createRetryBudget,
@@ -56,7 +57,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No avatar yet.", code: "no-avatar" }, { status: 404 });
     }
     const version = pointer.version;
-    const key = renderCacheKey(version, itemIds as string[]);
+    const key = renderCacheKey(version, itemIds as string[], await closetStamp(itemIds as string[]));
 
     const inputs = await loadRenderInputs(itemIds as string[], pointer.url);
     const avatarDataUrl =

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  deleteCandidates,
   deleteOldPointers,
   pointerPath,
   readAvatarPointer,
@@ -15,6 +16,12 @@ import {
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
+import { describeAppearance } from "@/lib/meta/spark";
+import {
+  avatarLimitMessage,
+  checkAvatarAllowance,
+  recordAvatarGeneration,
+} from "@/lib/limits";
 import { buildAvatarPrompt, detectImageFormat, type Vibe } from "@/lib/render";
 
 export const maxDuration = 300;
@@ -25,7 +32,10 @@ const VIBES = ["playful", "minimal", "edgy", "classic"] as const;
 
 /** Current avatar (newest versioned pointer), or null when none yet. */
 export async function GET() {
-  const pointer = await readAvatarPointer(getBlobStore());
+  const store = getBlobStore();
+  // Leaving a redo without choosing = Cancel: orphans die on the next load.
+  await deleteCandidates(store).catch(() => undefined);
+  const pointer = await readAvatarPointer(store);
   if (!pointer) return NextResponse.json({ avatar: null });
   return NextResponse.json({ avatar: { url: pointer.url, version: pointer.version } });
 }
@@ -68,19 +78,31 @@ export async function POST(req: Request) {
     console.log(`avatar error=bad-fullbody route_ms=${routeMs()}`);
     return NextResponse.json({ error: "The full-body photo must be an image data URL." }, { status: 400 });
   }
-  const images = isDataUrl(fullBody) ? [selfie, fullBody] : [selfie];
-  const prompt = buildAvatarPrompt({
-    height: typeof height === "string" ? height : null,
-    build: typeof build === "string" ? build : null,
-    hairNote: typeof hairNote === "string" ? hairNote : null,
-    vibe: (VIBES as readonly string[]).includes(vibe as string) ? (vibe as Vibe) : null,
-  });
 
   const store = getBlobStore();
+  const allowance = await checkAvatarAllowance(store, Date.now());
+  if (!allowance.allowed) {
+    return NextResponse.json(
+      { error: avatarLimitMessage(allowance.resetAt), code: "avatar-limit", resetAt: allowance.resetAt },
+      { status: 429 },
+    );
+  }
+
+  const images = isDataUrl(fullBody) ? [selfie, fullBody] : [selfie];
+
   const previous = await readAvatarPointer(store);
   let uploadedPath: string | null = null;
   let pointerWritten = false;
   try {
+    // Likeness brief from the selfie: prompt-only, never stored or logged.
+    const appearance = await describeAppearance(selfie, budget);
+    const prompt = buildAvatarPrompt({
+      height: typeof height === "string" ? height : null,
+      build: typeof build === "string" ? build : null,
+      hairNote: typeof hairNote === "string" ? hairNote : null,
+      vibe: (VIBES as readonly string[]).includes(vibe as string) ? (vibe as Vibe) : null,
+      appearance,
+    });
     const bytes = images.reduce((sum, image) => sum + Buffer.byteLength(image), 0);
     console.log(`avatar start images=${images.length} bytes=${bytes}`);
     const raw = await editImage({ images, prompt, budget });
@@ -104,6 +126,8 @@ export async function POST(req: Request) {
       await store.delBlobs([previous.path]).catch(() => undefined);
     }
     await deleteOldPointers(store, pointerPath(pointer.version));
+    // One weekly generation consumed; a missed write keeps the count.
+    await recordAvatarGeneration(store, Date.now()).catch(() => undefined);
     console.log(`avatar ms=${routeMs()} version=${pointer.version} format=${format.ext}`);
     return NextResponse.json({ url: pointer.url, version: pointer.version });
   } catch (err) {
@@ -116,7 +140,7 @@ export async function POST(req: Request) {
     if (/content_policy_violation/i.test(message)) {
       console.log(`avatar error=content-policy route_ms=${routeMs()}`);
       return NextResponse.json(
-        { error: "The image model declined that photo. Try a different selfie." },
+        { error: "That photo didn't work. Try a different selfie." },
         { status: 400 },
       );
     }

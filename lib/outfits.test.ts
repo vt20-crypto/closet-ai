@@ -146,6 +146,15 @@ test("validateOutfits accepts tee + cardigan + jacket", () => {
   assert.equal(valid.length, 1);
 });
 
+test("validateOutfits accepts a cardigan over a blouse", () => {
+  const closet = [...CLOSET, item("bl1", "blouse"), item("c1", "cardigan", "mid")];
+  const { valid } = validateOutfits({
+    items: closet,
+    raw: [{ item_ids: ["bl1", "c1", "b1", "s1"], reason: "r", weather_note: "w" }],
+  });
+  assert.equal(valid.length, 1);
+});
+
 test("validateOutfits rejects a mid layer over a sweater base", () => {
   const closet = [...CLOSET, item("c1", "cardigan", "mid")];
   const { valid, problems } = validateOutfits({
@@ -153,7 +162,7 @@ test("validateOutfits rejects a mid layer over a sweater base", () => {
     raw: [{ item_ids: ["t2", "c1", "b1", "s1"], reason: "r", weather_note: "w" }],
   });
   assert.equal(valid.length, 0);
-  assert.match(problems[0]?.reasons.join(";") ?? "", /tee, tank, shirt, polo or turtleneck/);
+  assert.match(problems[0]?.reasons.join(";") ?? "", /shirt-like base/);
 });
 
 test("a shirt tagged as outer still counts as a top, never an outer", () => {

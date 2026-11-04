@@ -3,6 +3,7 @@ import { put } from "@vercel/blob";
 
 import { readAvatarPointer } from "@/lib/avatarPointer";
 import { getBlobStore, readCache, writeCache } from "@/lib/cache";
+import { closetStamp } from "@/lib/closet";
 import { editImage } from "@/lib/meta/image";
 import {
   createRetryBudget,
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No avatar yet.", code: "no-avatar" }, { status: 404 });
     }
     const version = pointer.version;
-    const key = renderCacheKey(version, itemIds as string[]);
+    const key = renderCacheKey(version, itemIds as string[], await closetStamp(itemIds as string[]));
     const cached = await readCache<RenderRecord>(key, Number.POSITIVE_INFINITY);
     if (cached.hit && cached.data) {
       console.log(`render ms=${routeMs()} cached=1 verified=${cached.data.verified ? 1 : 0} avatar=${version}`);
@@ -93,7 +94,7 @@ export async function POST(req: Request) {
           verified: false,
           invented: [],
           fallback: true,
-          note: "The image model declined this combination. Showing the flat-lay instead.",
+          note: "Couldn't put this look on your avatar right now - here are the pieces.",
         },
         { status: 200 },
       );

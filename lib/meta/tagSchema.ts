@@ -163,6 +163,19 @@ export interface FitAxes {
   rise: string;
 }
 
+export interface AllowedFitAxes {
+  fit: string[];
+  length: string[];
+  sleeve: string[];
+  rise: string[];
+}
+
+/** The chip values an edit sheet may offer for one garment type. */
+export function allowedFitAxes(type: string): AllowedFitAxes {
+  const rules = FIT_RULES[fitCategoryForType(type)];
+  return { fit: [...rules.fit], length: [...rules.length], sleeve: [...rules.sleeve], rise: [...rules.rise] };
+}
+
 /** Server-side validation: anything invalid for the garment type becomes "n/a". */
 export function normalizeFitTags(
   type: string,

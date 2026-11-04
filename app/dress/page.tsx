@@ -19,6 +19,7 @@ import {
   type DressState,
 } from "@/lib/dress";
 import { speak, unlockSpeech } from "@/lib/speak";
+import { META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 
 import { Sticker } from "../sticker";
 import VoiceButton from "../style/voice-button";
@@ -311,7 +312,11 @@ export default function DressPage() {
         error?: string;
         code?: string;
       };
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if (!res.ok) {
+        const failure = new Error(body.error ?? `HTTP ${res.status}`);
+        (failure as { code?: string }).code = body.code;
+        throw failure;
+      }
       if (body.verdict === "match") {
         beep(760);
         const next = advance(state);
@@ -330,7 +335,7 @@ export default function DressPage() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Check failed.";
-      if (message.includes("hiccup")) {
+      if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
         say("I couldn't check that one. Tap to try again, or say skip.");
       } else {
         say(`Couldn't check: ${message}`);
@@ -440,7 +445,11 @@ export default function DressPage() {
         trace?: TraceEntry[];
         error?: string;
       };
-      if (!res.ok || !body.state) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if (!res.ok || !body.state) {
+        const failure = new Error(body.error ?? `HTTP ${res.status}`);
+        (failure as { code?: string }).code = (body as { code?: string }).code;
+        throw failure;
+      }
       // The agent only swaps within known ids; unknown steps would 400 above.
       const validated = body.state.steps.every((s) => itemsRef.current[s.itemId])
         ? body.state
@@ -457,7 +466,11 @@ export default function DressPage() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Replan failed.";
-      say(message.includes("hiccup") ? "I couldn't think that through. Try again." : message);
+      say(
+        (err as { code?: string }).code === META_UNAVAILABLE_CODE
+          ? "I couldn't think that through. Try again."
+          : message,
+      );
     } finally {
       setBusy(false);
     }
@@ -484,8 +497,13 @@ export default function DressPage() {
         outfits?: Array<{ item_ids: string[]; key: string }>;
         missing?: string[];
         error?: string;
+        code?: string;
       };
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      if (!res.ok) {
+        const failure = new Error(body.error ?? `HTTP ${res.status}`);
+        (failure as { code?: string }).code = body.code;
+        throw failure;
+      }
       if ((body.missing ?? []).length > 0 || (body.outfits ?? []).length === 0) {
         setStatus("Your closet can't make a full outfit yet. Add clothes first.");
         return;

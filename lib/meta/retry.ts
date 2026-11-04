@@ -14,8 +14,8 @@ export const MODEL_404_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 /** Machine-readable code for Meta-caused failures (UI shows friendly text). */
 export const META_UNAVAILABLE_CODE = "meta_unavailable";
-/** User-facing line for Meta outages. Never include raw API error text. */
-export const META_HICCUP_MESSAGE = "Meta's AI is having a hiccup.";
+/** User-facing line for stylist outages. Never include raw API error text. */
+export const META_HICCUP_MESSAGE = "Your stylist is taking a breather. Try again in a minute.";
 
 /** True for errors raised by the Meta Model API (numeric SDK status). */
 export function isMetaApiError(err: unknown): boolean {

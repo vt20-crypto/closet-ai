@@ -20,6 +20,8 @@ export interface AvatarPromptInput {
   build?: string | null;
   hairNote?: string | null;
   vibe?: Vibe | null;
+  /** One-line Spark appearance brief; never logged or stored, prompt-only. */
+  appearance?: string | null;
 }
 
 /** Stylized-avatar prompt (proven shape: spike 08b + AGENTS.md). */
@@ -30,12 +32,15 @@ export function buildAvatarPrompt(input: AvatarPromptInput): string {
     input.build ? `${input.build} build` : null,
     input.hairNote ? `hair: ${input.hairNote}` : null,
   ].filter(Boolean);
+  const likeness = input.appearance
+    ? ` Preserve exact likeness: ${input.appearance}. Same skin tone, hairstyle, facial hair, glasses.`
+    : ``;
   return (
     `Generate ONE stylized full-body character based on this person: fashion-illustration / ` +
     `3D-animated style, same face, skin tone, hair and build` +
     (traits.length > 0 ? ` (${traits.join(", ")})` : ``) +
     `, plain grey fitted base layer, ${vibe.pose}, ${vibe.expression}, ` +
-    `plain neutral studio background. A stylized character, NOT a store mannequin. ` +
+    `plain neutral studio background.${likeness} A stylized character, NOT a store mannequin. ` +
     `Entire body head to feet visible.`
   );
 }
@@ -90,9 +95,13 @@ export function detectImageFormat(bytes: Buffer): ImageFormat {
   return { ext: "png", contentType: "image/png" };
 }
 
-/** Cache key: avatar version + sorted item ids (order-independent). */
-export function renderCacheKey(avatarVersion: string, itemIds: string[]): string {
-  return `renders/${hashKey([avatarVersion, ...[...itemIds].sort()].join("|"))}`;
+/**
+ * Cache key: avatar version + sorted item ids (order-independent) + the
+ * closet stamp (max updatedAt). An edit changes the stamp, so stale renders
+ * for that look never serve.
+ */
+export function renderCacheKey(avatarVersion: string, itemIds: string[], stamp = ""): string {
+  return `renders/${hashKey([avatarVersion, ...[...itemIds].sort(), stamp].join("|"))}`;
 }
 
 export interface InventedItem {

@@ -443,7 +443,7 @@ export default function TodayPage() {
             url: null,
             verified: false,
             invented: [],
-            note: outage ? "Showing your pieces." : "Couldn't render this look — showing the items.",
+            note: outage ? "Showing your pieces." : "Couldn't put this look on your avatar right now - here are the pieces.",
             ...(outage ? { outage: true as const } : {}),
           };
           const atVersion = avatar.version;
@@ -488,7 +488,7 @@ export default function TodayPage() {
           url: null,
           verified: false,
           invented: [] as InventedItem[],
-          note: "Couldn't render this look — showing the items.",
+          note: "Couldn't put this look on your avatar right now - here are the pieces.",
         };
         setRenders((prev) => storeRender(prev, atVersion, key, fallback));
         return fallback;
@@ -635,7 +635,7 @@ export default function TodayPage() {
       setRelaxed(false);
     }
     const hiccupTimer = window.setTimeout(
-      () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
+      () => setStatus(META_HICCUP_MESSAGE),
       8000,
     );
     try {
@@ -743,12 +743,12 @@ export default function TodayPage() {
     } catch (err) {
       window.clearTimeout(hiccupTimer);
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE && !isRetry) {
-        setStatus(`${META_HICCUP_MESSAGE} Retrying…`);
+        setStatus(META_HICCUP_MESSAGE);
         await new Promise((resolve) => setTimeout(resolve, 10_000));
         return fetchOutfits(exclude, label, true, overrides, mode);
       }
       if ((err as { code?: string }).code === META_UNAVAILABLE_CODE) {
-        setStatus("Meta's AI is still having trouble.");
+        setStatus("Your stylist is still taking a breather.");
         setRetryAction(() => () => {
           setRetryAction(null);
           void fetchOutfits(exclude, label, false, overrides, mode);

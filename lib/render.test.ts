@@ -17,6 +17,11 @@ describe("renderCacheKey", () => {
     assert.notEqual(renderCacheKey("v1", ["a", "b"]), renderCacheKey("v1", ["a", "c"]));
     assert.match(renderCacheKey("v1", ["a"]), /^renders\/[0-9a-f]{8}$/);
   });
+
+  it("changes when the closet stamp changes", () => {
+    assert.equal(renderCacheKey("v1", ["a"], "s1"), renderCacheKey("v1", ["a"], "s1"));
+    assert.notEqual(renderCacheKey("v1", ["a"], "s1"), renderCacheKey("v1", ["a"], "s2"));
+  });
 });
 
 describe("decideVerification", () => {
@@ -116,5 +121,17 @@ describe("buildSavedLook", () => {
       place: null,
       renderUrl: null,
     });
+  });
+});
+
+describe("buildAvatarPrompt likeness", () => {
+  it("adds the exact-likeness line only when an appearance brief exists", () => {
+    const plain = buildAvatarPrompt({ vibe: "minimal" });
+    assert.ok(!plain.includes("Preserve exact likeness"));
+    const brief = "skin tone warm beige; hairstyle black bob";
+    const prompt = buildAvatarPrompt({ vibe: "minimal", appearance: brief });
+    assert.match(prompt, /Preserve exact likeness: skin tone warm beige; hairstyle black bob\./);
+    assert.match(prompt, /Same skin tone, hairstyle, facial hair, glasses\./);
+    assert.match(prompt, /NOT a store mannequin/);
   });
 });

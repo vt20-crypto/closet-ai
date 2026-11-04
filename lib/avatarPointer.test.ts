@@ -2,7 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  deleteCandidates,
   deleteOldPointers,
+  isCandidatePath,
   pointerPath,
   readAvatarPointer,
   writeAvatarPointer,
@@ -131,5 +133,23 @@ describe("avatar pointer redo", () => {
     assert.equal(await readAvatarPointer(store), null);
     await writeAvatarPointer(store, pointer("v1"));
     assert.equal((await readAvatarPointer(store))?.version, "v1");
+  });
+});
+
+describe("deleteCandidates", () => {
+  it("removes unfinished candidates but never the avatar or pointers", async () => {
+    const { store, files, deleted } = makeFakeStore();
+    await store.putBlob("avatar/candidate-aaa.webp", "a", "image/webp");
+    await store.putBlob("avatar/candidate-bbb.png", "b", "image/png");
+    await store.putBlob("avatar/real.webp", "c", "image/webp");
+    await writeAvatarPointer(store, pointer("v1"));
+    assert.equal(isCandidatePath("avatar/candidate-aaa.webp"), true);
+    assert.equal(isCandidatePath("avatar/real.webp"), false);
+    assert.equal(isCandidatePath("avatar/pointer-v1.json"), false);
+    assert.equal(isCandidatePath("avatar/candidate-x/evil.png"), false);
+    await deleteCandidates(store, "avatar/candidate-aaa.webp");
+    assert.deepEqual(deleted, ["avatar/candidate-bbb.png"]);
+    assert.ok(files.has("avatar/candidate-aaa.webp"));
+    assert.ok(files.has("avatar/real.webp"));
   });
 });

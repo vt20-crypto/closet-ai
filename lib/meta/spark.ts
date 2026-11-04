@@ -558,6 +558,73 @@ export async function tagFit(
   return normalizeFitTags(type, parsed.fit, parsed.length, parsed.sleeve, parsed.rise);
 }
 
+const APPEARANCE_FIELDS = [
+  "skin_tone",
+  "face_shape",
+  "hair_color",
+  "hair_length",
+  "hair_texture",
+  "hairstyle",
+  "facial_hair",
+  "glasses",
+  "eyebrows",
+  "build",
+] as const;
+
+const APPEARANCE_SCHEMA = {
+  type: "object",
+  properties: Object.fromEntries(APPEARANCE_FIELDS.map((field) => [field, { type: "string" }])),
+  required: [...APPEARANCE_FIELDS],
+  additionalProperties: false,
+} as const;
+
+export type AppearanceDescription = Record<(typeof APPEARANCE_FIELDS)[number], string>;
+
+/**
+ * Appearance brief for avatar likeness (Spark, minimal effort, strict JSON).
+ * Returns a one-line "; "-joined brief; the caller never logs or stores it.
+ * Short strings only: three words or fewer per field, "not visible" unsure.
+ */
+export async function describeAppearance(
+  imageRef: string,
+  budget?: RetryBudget,
+): Promise<string> {
+  const { result: res } = await withModelFailover(
+    "spark appearance",
+    (model) =>
+      getMetaClient().responses.create({
+        model,
+        reasoning: { effort: "minimal" },
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "Describe this selfie for a character artist recreating the person's likeness: " +
+                  "skin tone, face shape, hair color, length, texture and style, facial hair, " +
+                  "glasses, eyebrows, build. Three words or fewer per field; write not visible " +
+                  "for anything you cannot see. Never invent unseen traits.",
+              },
+              { type: "input_image", detail: "auto", image_url: imageRef },
+            ],
+          },
+        ],
+        text: { format: { type: "json_schema", name: "appearance", strict: true, schema: APPEARANCE_SCHEMA } },
+      }),
+    budget,
+  );
+  const parsed = JSON.parse(res.output_text ?? "{}") as Partial<AppearanceDescription>;
+  const bits: string[] = [];
+  for (const field of APPEARANCE_FIELDS) {
+    const value = (parsed[field] ?? "").toLowerCase().replace(/[^a-z0-9 /-]/g, "").trim().slice(0, 40);
+    if (value && value !== "not visible") bits.push(`${field.replace(/_/g, " ")} ${value}`);
+  }
+  return bits.join("; ");
+}
+
 // --- Get-dressed agent ---
 
 const CHECK_SCHEMA = {
