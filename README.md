@@ -15,6 +15,8 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 | Voice input + /today slot fill (`/api/transcribe`) | `muse-voice-transcribe-1.0` ASR + `muse-spark-1.3`, strict JSON | live |
 | Dress-step camera check (`/api/dress/check`) | `muse-spark-1.3`, Responses API, strict JSON | live |
 | Voice replan agent (`/api/dress/replan`) | `muse-spark-1.3`, Responses API, function tools | live |
+| Stylized avatar (`/api/avatar`) | `muse-image-1.0`, `POST /v1/images/edits`, size `1024x1536` | live |
+| Try-on render + verification (`/api/render`) | `muse-image-1.0` render, Spark strict-JSON `garments_match` / `invented_items` verify → re-render → flat-lay | live |
 
 ## Built during the hackathon
 
@@ -28,6 +30,7 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 - 2026-11-03: voice on /today — tap-to-talk mic pill (Web Audio → 16 kHz mono 16-bit WAV in-browser, 20s cap, silence detect) → `/api/transcribe` (Muse Voice Transcribe ASR + Spark slot fill) fills the form and auto-runs outfits; outfit 1 read aloud via browser `speechSynthesis` + "Read again".
 
 - 2026-11-03: get-dressed agent — `/dress` (linked from each outfit card) talks the user through one outfit item by item: full-screen tap target with the spoken instruction, rear-camera snapshot (`getUserMedia` + `<input capture>` fallback, ≤1024px) → `/api/dress/check` (Spark `low` effort compares snapshot vs target cutout + ≤3 same-type items, verdict match/wrong_item/unsure naming the visible difference, server-validated ids) → voice replan loop (`get_outfit_state`, `swap_item`, `mark_unavailable`, `finish`; cap 5 turns, repeat-3× stop, model picks same-slot replacements, invalid ids fall back to a deterministic pick) with a "How I decided" trace; repeat/back/skip/next handled on-device; Web Audio step sounds; finish flat-lay. See Best Agentic below.
+- 2026-11-04: Avatar Studio + Stage — `/studio` (selfie → stylized 3D-animated full-body avatar via Muse Image, unguessable Blob paths, Redo deletes the old) and the Stage spotlight on `/style` (each look auto-rendered onto the avatar via `/api/render` with Spark verify → one re-render → flat-lay fallback, cache + next-look prefetch, swipe/Prev-Next, Save-look stub carrying date/time/place). See Best Creative below.
 
 ## Best Agentic: get-dressed agent
 
@@ -36,12 +39,19 @@ Built during the **Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)**
 - Validation: every id the loop names is checked against the closet server-side (unknown `matched_item_id` forces `unsure`); `lib/dressAgent.test.ts` proves the cap, repeat-stop, valid-swap and invalid-swap-fallback paths with a fake model; `lib/dress.test.ts` locks the dressing order and state machine.
 - Eyes-free: every response spoken (`speechSynthesis`), whole screen is one tap target, sounds per step, local repeat/back/skip/next (no AI call), trace shown as plain-language tool lines only.
 
+## Best Creative: avatar try-on stage
+
+- One selfie becomes a reusable character: `/studio` sends a ≤1024px selfie (never stored) to Muse Image with a neutral-base-layer, head-to-toe, vibe-driven-pose prompt; the stylized avatar is saved under an unguessable Blob path with the pointer in a small JSON, and Redo deletes the old file.
+- Every outfit is staged on that character: `/api/render` dresses the avatar in the look's real cutouts under a strict garment-only prompt, then Spark verifies `{ garments_match, invented_items[] }` — a fail re-renders once naming the invented pieces, a second fail falls back to the flat-lay with an honest note. Renders cache by avatar version + sorted item ids; the next look prefetches silently.
+- Privacy holds throughout: routes log timings and verdicts only, never images; the browser never calls Meta directly.
+
 ## Third-party code
 
 - SAM stream-event shim (`lib/meta/sam.ts`): adapted from Meta's MIT-licensed cookbook [`07_sam/01_api_basics`](https://github.com/meta-models/meta-model-cookbook/tree/main/07_sam/01_api_basics) (`typescript/sam-api.ts`) — synthesizes `response.output_text.done` from `response.content_part.done`.
 - Mask-to-cutout mapping (`lib/cutout.ts`): adapted from Meta's MIT-licensed cookbook [`07_sam/02_video_to_sticker_pack`](https://github.com/meta-models/meta-model-cookbook/tree/main/07_sam/02_video_to_sticker_pack) (`create-segmented-gif.mjs`) — mask raster scaled into its box, hole fill, alpha cutout, crop to box + padding. Ported via `spikes/01-sam-cutout.ts`.
 - Fonts (OFL 1.1, self-hosted via `next/font/google`, no runtime request to Google): [Playfair Display](https://github.com/google/fonts/tree/main/ofl/playfairdisplay), [DM Sans](https://github.com/google/fonts/tree/main/ofl/dmsans), [Caveat](https://github.com/google/fonts/tree/main/ofl/caveat).
 - ASR request shape (`lib/meta/voice.ts`): adapted from Meta's MIT-licensed cookbook [`06_muse_voice/01_voice_api_fundamentals`](https://github.com/meta-models/meta-model-cookbook/tree/main/06_muse_voice/01_voice_api_fundamentals) (`utils.py transcribe_recording`) — multipart `request` JSON (`mode: PUSH_TO_TALK`, `model`, `audioEncoding: WAV`, optional `keywords`) + `audio` WAV part.
+- Image edits (`lib/meta/image.ts`, ported via `spikes/08-image-edits.ts`): `POST /v1/images/edits` with a JSON `images` array, `reasoning_strength: "low"`, tool enablement off — the Image-on-Responses pattern from Meta's MIT-licensed cookbook [`05_muse_image/02_backyard_restyle`](https://github.com/meta-models/meta-model-cookbook/tree/main/05_muse_image/02_backyard_restyle).
 
 ## Not Meta
 

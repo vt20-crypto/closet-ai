@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { tapeLabel } from "@/lib/labels";
 import { META_HICCUP_MESSAGE, META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import { slotRank } from "@/lib/outfits";
+import { buildSavedLook } from "@/lib/render";
 import { normalizeTimeOfDay, resolveDateText, todayISO, tomorrowISO } from "@/lib/when";
 import {
   applyMoreIdeas,
@@ -16,7 +17,7 @@ import {
   pageRange,
   type OutfitPagerState,
 } from "@/lib/outfitPager";
-import { speak } from "@/lib/speak";
+import { speak, unlockSpeech } from "@/lib/speak";
 
 import { Sticker, Tape } from "../sticker";
 import VoiceButton, { type VoiceSlots } from "./voice-button";
@@ -129,6 +130,22 @@ const MISSING_HINTS: Record<string, string> = {
   bottoms: "pants, jeans, shorts or a skirt",
 };
 
+/** Tiny spark mark for the quiet credit line under each outfit. */
+function SparkIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M6 0l1.2 4.8L12 6 7.2 7.2 6 12 4.8 7.2 0 6l4.8-1.2z" />
+    </svg>
+  );
+}
+
 export default function TodayPage() {
   const [mood, setMood] = useState<string | null>(null);
   const [occasion, setOccasion] = useState<string | null>(null);
@@ -154,6 +171,25 @@ export default function TodayPage() {
   const [ranKey, setRanKey] = useState<string | null>(null);
   const [rulesNoteKey, setRulesNoteKey] = useState<string | null>(null);
   const [voiceRequested, setVoiceRequested] = useState(false);
+
+  // Stage: avatar spotlight for the selected look.
+  const [avatar, setAvatar] = useState<{ url: string; version: string } | null | undefined>(undefined);
+  const [stageIndex, setStageIndex] = useState(0);
+  const [showItems, setShowItems] = useState(false);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [renders, setRenders] = useState<
+    Record<string, { url: string | null; verified: boolean; invented: string[]; note?: string }>
+  >({});
+  const rendersRef = useRef<Record<string, { url: string | null }>>({});
+  rendersRef.current = renders;
+  const inflightRef = useRef<Set<string>>(new Set());
+  const touchX = useRef<number | null>(null);
+
+  function resetStage() {
+    setStageIndex(0);
+    setShowItems(false);
+    setSaveNote(null);
+  }
 
   // The cards on screen: exactly the pager's current page (at most 3).
   const page = pager ? currentPage(pager) : [];
@@ -187,6 +223,28 @@ export default function TodayPage() {
   // After results exist, Get outfits rests until the inputs change again.
   const getStale = pager !== null && ranKey === inputsKey;
 
+  // The staged look: exactly one spotlight look at a time.
+  const staged = page.length > 0 ? page[Math.min(stageIndex, page.length - 1)] : undefined;
+  const stagedCards = staged
+    ? staged.item_ids
+        .map((id) => ({ id, card: itemCards[id] }))
+        .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
+        .sort((a, b) => slotRank(a.card.slot) - slotRank(b.card.slot))
+    : [];
+  const stagedRender = staged ? renders[staged.key] : undefined;
+  const whenBits = [
+    whenDate === null ? "Today" : whenDate === tomorrowISO() ? "Tomorrow" : whenDate,
+    timeOfDay,
+    destination.trim() || weather?.placeName?.trim() || null,
+  ].filter((bit): bit is string => Boolean(bit));
+
+  function goStage(delta: number) {
+    if (page.length === 0) return;
+    setStageIndex((index) => (index + delta + page.length) % page.length);
+    setShowItems(false);
+    setSaveNote(null);
+  }
+
   // Remember the last city across visits (loaded after mount: no SSR value).
   useEffect(() => {
     void Promise.resolve().then(() => {
@@ -200,6 +258,9 @@ export default function TodayPage() {
   }, []);
 
   // Restore the session's inputs + pager (e.g. back from /dress keeps results).
+  // Mount-only sync from sessionStorage: setting state once on mount is the
+  // whole point, so this effect is exempt from the cascading-render rule.
+  /* eslint-disable react-hooks/set-state-in-effect -- single mount-only restore from sessionStorage */
   useEffect(() => {
     try {
       const raw = window.sessionStorage.getItem(SESSION_KEY);
@@ -216,6 +277,7 @@ export default function TodayPage() {
       setVoiceRequested(saved.inputs.voiceRequested);
       if (saved.pager) {
         setPager(saved.pager);
+        resetStage();
         setItemCards(saved.itemCards ?? {});
         setWeather(saved.weather ?? null);
         setDressCode(saved.dressCode ?? null);
@@ -227,6 +289,7 @@ export default function TodayPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Persist inputs + results for the session (Save, and back-nav from /dress).
   useEffect(() => {
@@ -246,6 +309,116 @@ export default function TodayPage() {
     }
   }, [mood, occasion, occasionText, destination, city, whenDate, timeOfDay, voiceRequested, pager, itemCards, weather, dressCode, relaxed]);
 
+  // Load the avatar pointer once (no-store: a redo replaces it).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/avatar", { cache: "no-store" });
+        const body = (await res.json()) as { avatar?: { url: string; version: string } | null };
+        if (!cancelled) setAvatar(res.ok ? (body.avatar ?? null) : null);
+      } catch {
+        if (!cancelled) setAvatar(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Pure fetch for one look's render: no state writes, so effects can call it.
+  // Returns the record to store, "no-avatar" when the avatar is gone, or null
+  // when there is nothing to store (cached, in flight, failed prefetch).
+  const fetchRender = useCallback(
+    async (
+      outfit: OutfitView,
+      prefetch: boolean,
+    ): Promise<
+      | { url: string | null; verified: boolean; invented: string[]; note?: string }
+      | "no-avatar"
+      | null
+    > => {
+      const key = outfit.key;
+      if (!avatar || rendersRef.current[key] || inflightRef.current.has(key)) return null;
+      inflightRef.current.add(key);
+      try {
+        const res = await fetch("/api/render", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ itemIds: outfit.item_ids }),
+        });
+        const body = (await res.json()) as {
+          url?: string | null;
+          verified?: boolean;
+          invented?: string[];
+          note?: string;
+          code?: string;
+        };
+        if (!res.ok) return body.code === "no-avatar" ? "no-avatar" : null;
+        return {
+          url: body.url ?? null,
+          verified: body.verified === true,
+          invented: body.invented ?? [],
+          note: body.note,
+        };
+      } catch {
+        // Direct renders fall back to the flat-lay; prefetch failures stay silent
+        // so selecting the look retries through the same path.
+        return prefetch
+          ? null
+          : {
+              url: null,
+              verified: false,
+              invented: [],
+              note: "Couldn't render this look — showing the items.",
+            };
+      } finally {
+        inflightRef.current.delete(key);
+      }
+    },
+    [avatar],
+  );
+
+  // Auto-render the staged look onto the avatar; prefetch the next one.
+  useEffect(() => {
+    if (!avatar || !pager) return;
+    const current = currentPage(pager);
+    if (current.length === 0) return;
+    let cancelled = false;
+    const store = async (outfit: OutfitView, prefetch: boolean) => {
+      const result = await fetchRender(outfit, prefetch);
+      if (cancelled || !result) return;
+      if (result === "no-avatar") {
+        setAvatar(null);
+        return;
+      }
+      setRenders((prev) => ({ ...prev, [outfit.key]: result }));
+    };
+    const look = current[Math.min(stageIndex, current.length - 1)];
+    if (look) void store(look, false);
+    const next = current[stageIndex + 1];
+    if (next) void store(next, true);
+    return () => {
+      cancelled = true;
+    };
+  }, [avatar, stageIndex, pager, fetchRender]);
+
+  // Persist the staged look for the upcoming Lookbook task (stub until then).
+  function saveLook(outfit: OutfitView) {
+    try {
+      const look = buildSavedLook(outfit.item_ids, {
+        date: whenDate,
+        timeOfDay,
+        place: destination.trim() || weather?.placeName?.trim() || null,
+        renderUrl: renders[outfit.key]?.url ?? null,
+      });
+      window.sessionStorage.setItem("closet-ai-saved-look", JSON.stringify(look));
+    } catch {
+      // Private mode: the note below still confirms the tap.
+    }
+    setSaveNote("Lookbook is coming soon — this look is set aside for it.");
+  }
+
   function handleCityChange(value: string) {
     setCity(value);
     try {
@@ -261,22 +434,6 @@ export default function TodayPage() {
     const range = pageRange(p);
     if (range.from <= 1) return `${n} ${n === 1 ? "look" : "looks"} for you.`;
     return `Look ${range.from}–${range.to}.`;
-  }
-
-  /** Tiny spark mark for the quiet credit line under each outfit. */
-  function SparkIcon() {
-    return (
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 12 12"
-        fill="currentColor"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <path d="M6 0l1.2 4.8L12 6 7.2 7.2 6 12 4.8 7.2 0 6l4.8-1.2z" />
-      </svg>
-    );
   }
 
   async function fetchOutfits(
@@ -308,6 +465,7 @@ export default function TodayPage() {
     // "More ideas" appends; only a fresh pick resets the pager and flags.
     if (mode === "fresh") {
       setPager(null);
+      resetStage();
       setDepletedKey(null);
       setRelaxed(false);
     }
@@ -354,6 +512,7 @@ export default function TodayPage() {
         window.clearTimeout(hiccupTimer);
         setMissing(body.missing ?? []);
         setPager(null);
+        resetStage();
         setStatus("Your closet can't make a full outfit yet.");
         return null;
       }
@@ -376,6 +535,7 @@ export default function TodayPage() {
           return null;
         }
         setPager(folded.state);
+        resetStage();
         const merged = { ...itemCards, ...(body.items ?? {}) };
         setItemCards(merged);
         setStatus(folded.added === 1 ? "1 new look." : `${folded.added} new looks.`);
@@ -409,6 +569,7 @@ export default function TodayPage() {
       const items = body.items ?? {};
       const started = createPager(fresh.map((o) => ({ ...o, source: bodySource })));
       setPager(started);
+      resetStage();
       setItemCards(items);
       setWeather(nextWeather);
       setDressCode(nextDress);
@@ -794,6 +955,175 @@ export default function TodayPage() {
           <p className="text-lg">No dress code found online.</p>
         )
       ) : null}
+
+      {page.length > 0 && avatar === null && (
+        <section
+          aria-label="See it on you"
+          className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
+        >
+          <h2 className="font-display text-2xl">See it on you</h2>
+          <p className="text-lg">
+            Create your avatar once — then every look is shown on you, in your style.
+          </p>
+          <Link
+            href="/studio"
+            className="flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold text-(--primary-text)"
+          >
+            Create your avatar
+          </Link>
+        </section>
+      )}
+
+      {page.length > 0 && staged && avatar && (
+        <section
+          aria-label="Stage"
+          onTouchStart={(event) => {
+            touchX.current = event.touches[0]?.clientX ?? null;
+          }}
+          onTouchEnd={(event) => {
+            const start = touchX.current;
+            touchX.current = null;
+            if (start === null || page.length < 2) return;
+            const dx = (event.changedTouches[0]?.clientX ?? start) - start;
+            if (dx <= -40) goStage(1);
+            else if (dx >= 40) goStage(-1);
+          }}
+          className="flex flex-col gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-5 shadow-[0_10px_24px_var(--shadow)]"
+        >
+          <p aria-live="polite" className="text-lg text-(--text-muted)">
+            Look {stageIndex + 1} of {page.length}
+          </p>
+          <div className="overflow-hidden rounded-2xl bg-(--surface-2)">
+            {stagedRender?.url && !showItems ? (
+              <img
+                src={stagedRender.url}
+                alt={`Look ${stageIndex + 1} styled on your avatar`}
+                className="aspect-[2/3] w-full object-cover"
+              />
+            ) : showItems || stagedRender ? (
+              <ul className="grid grid-cols-2 gap-4 p-4" aria-label="Look garments, laid flat">
+                {stagedCards.map(({ id, card }) => (
+                  <li key={id} className="flex aspect-[3/4] items-center justify-center">
+                    <Sticker
+                      src={card.cutoutUrl}
+                      alt={`${card.type} in ${card.primary_color}`}
+                      seedId={id}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div
+                role="status"
+                className="flex aspect-[2/3] w-full items-center justify-center p-6 text-center"
+              >
+                <p className="text-lg text-(--text-muted)">Dressing your avatar…</p>
+              </div>
+            )}
+          </div>
+          {stagedRender?.url && !showItems && (
+            <span
+              aria-hidden="true"
+              className="mx-auto -mt-2 h-3 w-2/3 rounded-full bg-(--border-soft) blur-[3px]"
+            />
+          )}
+          {stagedRender && !stagedRender.url && stagedRender.note && (
+            <p className="text-lg text-(--text-muted)">{stagedRender.note}</p>
+          )}
+          {whenBits.length > 0 && (
+            <p>
+              <Tape label={whenBits.join(" · ")} seedId={`${staged.key}-when`} />
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2" aria-label="Items in this look">
+            {stagedCards.map(({ id, card }) => (
+              <Tape key={id} label={tapeLabel(card)} seedId={id} />
+            ))}
+          </div>
+          <p className="text-lg">{staged.reason}</p>
+          {staged.source === "rules" ? (
+            <div>
+              <button
+                type="button"
+                aria-expanded={rulesNoteKey === staged.key}
+                onClick={() => setRulesNoteKey((k) => (k === staged.key ? null : staged.key))}
+                className="flex min-h-11 items-center gap-1 text-[13px] text-(--text-muted) underline decoration-dotted underline-offset-4"
+              >
+                <SparkIcon />
+                Quick pick
+              </button>
+              {rulesNoteKey === staged.key && (
+                <p className="text-[13px] text-(--text-muted)">
+                  AI was busy, so this pick uses simple style rules.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="flex items-center gap-1 text-[13px] text-(--text-muted)">
+              <SparkIcon />
+              Styled by AI
+            </p>
+          )}
+          <div className="flex gap-3">
+            <button
+              type="button"
+              disabled={page.length < 2}
+              onClick={() => goStage(-1)}
+              aria-label="Previous look"
+              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            >
+              ‹ Prev
+            </button>
+            <button
+              type="button"
+              disabled={page.length < 2}
+              onClick={() => goStage(1)}
+              aria-label="Next look"
+              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+            >
+              Next ›
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => saveLook(staged)}
+            className="flex min-h-14 w-full items-center justify-center rounded-full bg-(--primary) px-6 text-lg font-semibold whitespace-nowrap text-(--primary-text)"
+          >
+            Save look
+          </button>
+          {saveNote && (
+            <p role="status" className="text-lg">
+              {saveNote}
+            </p>
+          )}
+          <Link
+            href={`/dress?ids=${staged.item_ids.join(",")}`}
+            className="flex min-h-14 w-full items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold"
+          >
+            Get dressed
+          </Link>
+          <div className="flex flex-col gap-3 min-[480px]:flex-row">
+            <button
+              type="button"
+              onClick={() => {
+                unlockSpeech();
+                speakOutfit(staged, page.length, itemCards, weather, dressCode);
+              }}
+              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap"
+            >
+              Read it to me
+            </button>
+            <button
+              type="button"
+              aria-expanded={showItems}
+              onClick={() => setShowItems((v) => !v)}
+              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap"
+            >
+              {showItems ? "Hide items" : "Show items"}
+            </button>
+          </div>
+        </section>
+      )}
 
       {page.length > 0 && (
         <section aria-label="Outfits" className="flex flex-col gap-8">

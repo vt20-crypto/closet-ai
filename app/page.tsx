@@ -3,6 +3,7 @@ import Link from "next/link";
 import { listItems } from "@/lib/closet";
 import { tapeLabel } from "@/lib/labels";
 
+import AvatarCard from "./avatar-card";
 import HomeWeather from "./home-weather";
 import InstallTip from "./install-tip";
 import MeButton from "./me-button";
@@ -62,6 +63,7 @@ export default async function Home() {
       >
         Plan today&apos;s outfit
       </Link>
+      <AvatarCard />
       <nav aria-label="Sections" className="grid grid-cols-2 gap-4">
         {tiles.map((tile) => (
           <Link

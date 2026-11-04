@@ -8,14 +8,7 @@ import { list, put } from "@vercel/blob";
  * missing entries are a miss. Keys are caller-built `type/hash` paths.
  */
 
-export function hashKey(input: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
-}
+export { hashKey } from "./hash.ts";
 
 export async function readCache<T>(path: string, ttlMs: number): Promise<{ hit: boolean; data?: T }> {
   try {

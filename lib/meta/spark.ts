@@ -572,6 +572,74 @@ export async function checkSnapshot(input: DressCheckInput): Promise<DressCheckR
   };
 }
 
+const VERIFY_SCHEMA = {
+  type: "object",
+  properties: {
+    garments_match: { type: "boolean" },
+    invented_items: { type: "array", items: { type: "string" } },
+  },
+  required: ["garments_match", "invented_items"],
+  additionalProperties: false,
+} as const;
+
+export interface VerifyRenderInput {
+  /** Data-URL PNG of the composed render (never logged). */
+  renderDataUrl: string;
+  /** Reference cutout URLs (public Blob URLs), in outfit order. */
+  referenceUrls: string[];
+  budget?: RetryBudget;
+}
+
+export interface VerifyRenderResult {
+  garments_match: boolean;
+  invented_items: string[];
+}
+
+/**
+ * Render verification (spike 08c shape): the render first, then every
+ * reference cutout. Runs through the Spark failover chain.
+ */
+export async function verifyRender(input: VerifyRenderInput): Promise<VerifyRenderResult> {
+  const api = getMetaClient();
+  const { result: res } = await withModelFailover(
+    "spark verify",
+    (model) =>
+      api.responses.create({
+        model,
+        reasoning: { effort: "low" },
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "The first image is a composed try-on render; the following images are the reference " +
+                  "garment cutouts given to the image model. Set garments_match=true ONLY if the person " +
+                  "wears exactly the reference garments and no other clothing was added, invented or " +
+                  "substituted. List any added/invented clothing in invented_items.",
+              },
+              { type: "input_image", detail: "auto", image_url: input.renderDataUrl },
+              ...input.referenceUrls.map((image_url) => ({
+                type: "input_image" as const,
+                detail: "auto" as const,
+                image_url,
+              })),
+            ],
+          },
+        ],
+        text: { format: { type: "json_schema", name: "verify", strict: true, schema: VERIFY_SCHEMA } },
+      }),
+    input.budget,
+  );
+  const parsed = JSON.parse(res.output_text ?? "") as Partial<VerifyRenderResult>;
+  const invented = Array.isArray(parsed.invented_items)
+    ? parsed.invented_items.filter((item): item is string => typeof item === "string")
+    : [];
+  return { garments_match: parsed.garments_match === true, invented_items: invented };
+}
+
 export interface ReplanInput {
   items: ReplanCandidate[];
   state: DressState;
