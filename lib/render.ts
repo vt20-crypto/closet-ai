@@ -46,6 +46,50 @@ export const RENDER_PROMPT =
   "any clothing. Reference garments may have small missing areas; render them as complete, " +
   "continuous garments. Keep face, body and pose unchanged.";
 
+export interface ImageFormat {
+  ext: "png" | "webp" | "jpg";
+  contentType: "image/png" | "image/webp" | "image/jpeg";
+}
+
+/**
+ * Sniff PNG / WEBP / JPEG by magic bytes. Muse Image returns WEBP bytes
+ * even when the request implies PNG, so storage extension, Blob content
+ * type and data-URL mime must come from here, not from an assumption.
+ * Unknown or truncated input falls back to PNG (the previous behavior).
+ */
+export function detectImageFormat(bytes: Buffer): ImageFormat {
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return { ext: "webp", contentType: "image/webp" };
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return { ext: "png", contentType: "image/png" };
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { ext: "jpg", contentType: "image/jpeg" };
+  }
+  return { ext: "png", contentType: "image/png" };
+}
+
 /** Cache key: avatar version + sorted item ids (order-independent). */
 export function renderCacheKey(avatarVersion: string, itemIds: string[]): string {
   return `renders/${hashKey([avatarVersion, ...[...itemIds].sort()].join("|"))}`;

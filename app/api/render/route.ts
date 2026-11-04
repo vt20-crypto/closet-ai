@@ -11,7 +11,7 @@ import {
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
 import { verifyRender } from "@/lib/meta/spark";
-import { decideVerification, RENDER_PROMPT, renderCacheKey } from "@/lib/render";
+import { decideVerification, detectImageFormat, RENDER_PROMPT, renderCacheKey } from "@/lib/render";
 
 export const maxDuration = 60;
 
@@ -34,6 +34,7 @@ interface RenderRecord {
  */
 export async function POST(req: Request) {
   const started = Date.now();
+  const routeMs = () => Date.now() - started;
   // ~55s shared budget: render (~9s) + verify (~4s) + one re-render + verify.
   const budget = createRetryBudget(started + 55_000);
   let body: unknown;
@@ -52,10 +53,12 @@ export async function POST(req: Request) {
     const byId = new Map(items.map((item) => [item.id, item]));
     const missing = (itemIds as string[]).filter((id) => !byId.has(id));
     if (missing.length > 0) {
+      console.log(`render error=unknown-item route_ms=${routeMs()}`);
       return NextResponse.json({ error: "Unknown closet item." }, { status: 400 });
     }
     const pointer = await readCache<AvatarPointer>("avatar/current", Number.POSITIVE_INFINITY);
     if (!pointer.hit || !pointer.data) {
+      console.log(`render error=no-avatar route_ms=${routeMs()}`);
       return NextResponse.json({ error: "No avatar yet.", code: "no-avatar" }, { status: 404 });
     }
     const version = pointer.data.version;
@@ -69,42 +72,50 @@ export async function POST(req: Request) {
     const refs = (itemIds as string[]).map((id) => byId.get(id)!);
     const avatarRes = await fetch(pointer.data.url, { cache: "no-store" });
     if (!avatarRes.ok) throw new Error("Could not load the avatar.");
-    const avatarDataUrl = `data:image/png;base64,${Buffer.from(await avatarRes.arrayBuffer()).toString("base64")}`;
+    const avatarBytes = Buffer.from(await avatarRes.arrayBuffer());
+    const avatarFormat = detectImageFormat(avatarBytes);
+    const avatarDataUrl = `data:${avatarFormat.contentType};base64,${avatarBytes.toString("base64")}`;
     const referenceUrls = refs.map((item) => item.cutoutUrl);
+    console.log(`render start images=${1 + referenceUrls.length} bytes=${avatarBytes.length} format=${avatarFormat.ext}`);
 
     let invented: string[] = [];
-    let renderDataUrl: string | null = null;
+    let renderBytes: Buffer | null = null;
     for (let attempt = 0; attempt <= 1; attempt += 1) {
       const prompt =
         attempt === 0
           ? RENDER_PROMPT
           : `${RENDER_PROMPT} Remove these invented items: ${invented.join(", ")}.`;
-      const png = await editImage({ images: [avatarDataUrl, ...referenceUrls], prompt, budget });
-      renderDataUrl = `data:image/png;base64,${png.toString("base64")}`;
+      const raw = await editImage({ images: [avatarDataUrl, ...referenceUrls], prompt, budget });
+      renderBytes = raw;
+      const renderFormat = detectImageFormat(raw);
+      const renderDataUrl = `data:${renderFormat.contentType};base64,${raw.toString("base64")}`;
       const verdict = await verifyRender({ renderDataUrl, referenceUrls, budget });
       invented = verdict.invented_items;
       const decision = decideVerification(verdict.garments_match, attempt);
-      console.log(`render verify attempt=${attempt} garments_match=${verdict.garments_match ? 1 : 0} invented=${invented.length} decision=${decision}`);
+      console.log(`render verify attempt=${attempt} garments_match=${verdict.garments_match ? 1 : 0} invented=${invented.length} format=${renderFormat.ext} decision=${decision}`);
       if (decision !== "rerender") {
-        if (decision === "fallback") renderDataUrl = null;
+        if (decision === "fallback") renderBytes = null;
         break;
       }
     }
-    if (!renderDataUrl) {
+    if (!renderBytes) {
+      console.log(`render ms=${routeMs()} cached=0 verified=0 fallback=1 invented=${invented.length}`);
       return NextResponse.json({ url: null, cached: false, verified: false, invented, fallback: true });
     }
-    const path = `renders/${crypto.randomUUID()}.png`;
-    const uploaded = await put(path, Buffer.from(renderDataUrl.split(",")[1], "base64"), {
+    const format = detectImageFormat(renderBytes);
+    const path = `renders/${crypto.randomUUID()}.${format.ext}`;
+    const uploaded = await put(path, renderBytes, {
       access: "public",
-      contentType: "image/png",
+      contentType: format.contentType,
       addRandomSuffix: false,
     });
     await writeCache(key, { url: uploaded.url } satisfies RenderRecord);
-    console.log(`render ms=${Date.now() - started} cached=0 verified=1 invented=${invented.length}`);
+    console.log(`render ms=${routeMs()} cached=0 verified=1 invented=${invented.length} format=${format.ext}`);
     return NextResponse.json({ url: uploaded.url, cached: false, verified: true, invented });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Render failed.";
     if (/content_policy_violation/i.test(message)) {
+      console.log(`render error=content-policy route_ms=${routeMs()}`);
       return NextResponse.json(
         {
           url: null,
@@ -118,12 +129,13 @@ export async function POST(req: Request) {
       );
     }
     if (isOutageError(err)) {
+      console.log(`render error=outage detail=${JSON.stringify(message.slice(0, 200))} route_ms=${routeMs()}`);
       return NextResponse.json(
         { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
         { status: 500 },
       );
     }
-    console.log(`render error=${JSON.stringify(message.slice(0, 200))} route_ms=${Date.now() - started}`);
+    console.log(`render error=${JSON.stringify(message.slice(0, 200))} route_ms=${routeMs()}`);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

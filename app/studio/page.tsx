@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
+import { META_UNAVAILABLE_CODE } from "@/lib/meta/retry";
 import type { Vibe } from "@/lib/render";
 
 const HEIGHTS = ["short", "average", "tall"] as const;
@@ -10,6 +11,7 @@ const BUILDS = ["slim", "average", "athletic", "curvy", "broad"] as const;
 const VIBES: Vibe[] = ["playful", "minimal", "edgy", "classic"];
 
 const STAGES = ["Sketching you…", "Adding your style…", "Finishing touches…"];
+const IMAGE_BUSY_MESSAGE = "Meta's image service is busy. Try again in a minute.";
 
 /** Downscale to a ≤1024px JPEG data URL in the browser; never uploaded as-is. */
 async function resizeToDataUrl(source: Blob): Promise<string> {
@@ -47,6 +49,62 @@ function chipClass(selected: boolean): string {
   }`;
 }
 
+/** One photo slot: file input, then a thumbnail with a Change button. */
+function PhotoPicker(props: {
+  inputId: string;
+  label: string;
+  url: string | null;
+  alt: string;
+  processing: boolean;
+  disabled: boolean;
+  onPick: (file: File | undefined) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={props.inputId} className="text-lg font-semibold">
+        {props.label}
+      </label>
+      {props.url ? (
+        <div className="flex items-center gap-4">
+          <span className="flex aspect-square w-28 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-(--border-soft) bg-(--surface-2)">
+            <img src={props.url} alt={props.alt} className="h-full w-full object-cover" />
+          </span>
+          <button
+            type="button"
+            disabled={props.disabled}
+            onClick={props.onClear}
+            className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold disabled:text-(--disabled-text)"
+          >
+            Change photo
+          </button>
+        </div>
+      ) : (
+        <>
+          <input
+            id={props.inputId}
+            type="file"
+            accept="image/*"
+            disabled={props.disabled || props.processing}
+            onChange={(event) => {
+              props.onPick(event.target.files?.[0]);
+              // Reset so picking the same file again still fires onChange;
+              // the choice stays visible as a thumbnail once processed.
+              event.target.value = "";
+            }}
+            className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4 py-3 text-base"
+          />
+          {props.processing && (
+            <p role="status" className="text-base text-(--text-muted)">
+              Processing photo…
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function StudioPage() {
   const [selfieUrl, setSelfieUrl] = useState<string | null>(null);
   const [fullBodyUrl, setFullBodyUrl] = useState<string | null>(null);
@@ -57,7 +115,8 @@ export default function StudioPage() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
-  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [processing, setProcessing] = useState<"selfie" | "fullbody" | null>(null);
   const [showForm, setShowForm] = useState(true);
   const timerRef = useRef<number | null>(null);
 
@@ -67,6 +126,8 @@ export default function StudioPage() {
     (async () => {
       try {
         const res = await fetch("/api/avatar", { cache: "no-store" });
+        const contentType = res.headers.get("content-type") ?? "";
+        if (!res.ok || !contentType.includes("application/json")) return;
         const body = (await res.json()) as { avatar?: { url: string; version: string } | null };
         if (!cancelled && body.avatar) {
           setAvatarUrl(body.avatar.url);
@@ -88,13 +149,20 @@ export default function StudioPage() {
     [],
   );
 
-  async function pickPhoto(file: File | undefined, set: (url: string | null) => void) {
+  async function pickPhoto(
+    file: File | undefined,
+    kind: "selfie" | "fullbody",
+    set: (url: string | null) => void,
+  ) {
     if (!file) return;
+    setProcessing(kind);
+    setError("");
     try {
-      setStatus("");
       set(await resizeToDataUrl(file));
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Could not read that photo.");
+      setError(err instanceof Error ? err.message : "Could not read that photo.");
+    } finally {
+      setProcessing(null);
     }
   }
 
@@ -102,13 +170,10 @@ export default function StudioPage() {
     if (!selfieUrl || busy) return;
     setBusy(true);
     setStage(0);
-    setStatus(STAGES[0]);
+    setError("");
+    // Photos stay in memory: after a failure the same tap retries the resend.
     timerRef.current = window.setInterval(() => {
-      setStage((s) => {
-        const next = Math.min(s + 1, STAGES.length - 1);
-        setStatus(STAGES[next]);
-        return next;
-      });
+      setStage((s) => Math.min(s + 1, STAGES.length - 1));
     }, 4000);
     try {
       const res = await fetch("/api/avatar", {
@@ -123,13 +188,20 @@ export default function StudioPage() {
           ...(vibe ? { vibe } : {}),
         }),
       });
-      const body = (await res.json()) as { url?: string; error?: string };
-      if (!res.ok || !body.url) throw new Error(body.error ?? `HTTP ${res.status}`);
+      const contentType = res.headers.get("content-type") ?? "";
+      const body = (
+        contentType.includes("application/json")
+          ? await res.json()
+          : null
+      ) as { url?: string; error?: string; code?: string } | null;
+      if (!res.ok || !body?.url) {
+        if (body?.code === META_UNAVAILABLE_CODE) throw new Error(IMAGE_BUSY_MESSAGE);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
       setAvatarUrl(body.url);
       setShowForm(false);
-      setStatus("Your avatar is ready.");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Avatar creation failed.");
+      setError(err instanceof Error ? err.message : "Avatar creation failed.");
     } finally {
       if (timerRef.current !== null) window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -154,7 +226,7 @@ export default function StudioPage() {
               type="button"
               onClick={() => {
                 setShowForm(true);
-                setStatus("");
+                setError("");
               }}
               className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
             >
@@ -170,32 +242,26 @@ export default function StudioPage() {
         </section>
       ) : (
         <section aria-label="Create your avatar" className="flex flex-col gap-6">
-          <label className="flex flex-col gap-2 text-lg font-semibold">
-            Front selfie (required)
-            <input
-              type="file"
-              accept="image/*"
-              disabled={busy}
-              onChange={(event) => {
-                void pickPhoto(event.target.files?.[0], setSelfieUrl);
-                event.target.value = "";
-              }}
-              className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4 py-3 text-base font-normal"
-            />
-          </label>
-          <label className="flex flex-col gap-2 text-lg font-semibold">
-            Full-body photo (optional, helps proportions)
-            <input
-              type="file"
-              accept="image/*"
-              disabled={busy}
-              onChange={(event) => {
-                void pickPhoto(event.target.files?.[0], setFullBodyUrl);
-                event.target.value = "";
-              }}
-              className="min-h-14 rounded-2xl border border-(--border) bg-(--surface) px-4 py-3 text-base font-normal"
-            />
-          </label>
+          <PhotoPicker
+            inputId="photo-selfie"
+            label="Front selfie (required)"
+            url={selfieUrl}
+            alt="Selected selfie thumbnail"
+            processing={processing === "selfie"}
+            disabled={busy}
+            onPick={(file) => void pickPhoto(file, "selfie", setSelfieUrl)}
+            onClear={() => setSelfieUrl(null)}
+          />
+          <PhotoPicker
+            inputId="photo-fullbody"
+            label="Full-body photo (optional, helps proportions)"
+            url={fullBodyUrl}
+            alt="Selected full-body thumbnail"
+            processing={processing === "fullbody"}
+            disabled={busy}
+            onPick={(file) => void pickPhoto(file, "fullbody", setFullBodyUrl)}
+            onClear={() => setFullBodyUrl(null)}
+          />
 
           <div className="flex flex-col gap-3">
             <h2 className="text-xl font-semibold">Height</h2>
@@ -266,18 +332,24 @@ export default function StudioPage() {
 
           <button
             type="button"
-            disabled={busy || !selfieUrl}
+            disabled={busy || !selfieUrl || processing !== null}
             onClick={() => void createAvatar()}
             className="min-h-16 rounded-full bg-(--primary) text-xl font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
           >
             {busy ? STAGES[stage] : "Create my avatar"}
           </button>
+          {busy && (
+            <span role="status" aria-live="polite" className="sr-only">
+              {STAGES[stage]}
+            </span>
+          )}
+          {error && (
+            <p role="alert" className="text-lg">
+              {error}
+            </p>
+          )}
         </section>
       )}
-
-      <p role="status" aria-live="polite" className="text-lg">
-        {status}
-      </p>
     </main>
   );
 }

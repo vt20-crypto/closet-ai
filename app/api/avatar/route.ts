@@ -9,7 +9,7 @@ import {
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
-import { buildAvatarPrompt, type Vibe } from "@/lib/render";
+import { buildAvatarPrompt, detectImageFormat, type Vibe } from "@/lib/render";
 
 export const maxDuration = 60;
 
@@ -38,17 +38,20 @@ function isDataUrl(value: unknown): value is string {
 
 /**
  * Create (or redo) the avatar. Selfies travel inline and are NEVER stored —
- * only the generated avatar PNG lands in Blob, under an unguessable path,
- * with the current pointer in a small JSON. Redo deletes the old avatar blob.
+ * only the generated avatar lands in Blob (format sniffed, usually WEBP),
+ * under an unguessable path, with the current pointer in a small JSON.
+ * Redo deletes the old avatar blob. Logs counts + timings only, never images.
  */
 export async function POST(req: Request) {
   const started = Date.now();
+  const routeMs = () => Date.now() - started;
   // ~55s retry budget inside the 60s route ceiling.
   const budget = createRetryBudget(started + 55_000);
   let body: unknown;
   try {
     body = await req.json();
   } catch {
+    console.log(`avatar error=bad-json route_ms=${routeMs()}`);
     return NextResponse.json({ error: "Send JSON: selfie (photo data URL)." }, { status: 400 });
   }
   const { selfie, fullBody, height, build, hairNote, vibe } = (body ?? {}) as {
@@ -60,9 +63,11 @@ export async function POST(req: Request) {
     vibe?: unknown;
   };
   if (!isDataUrl(selfie)) {
+    console.log(`avatar error=bad-selfie route_ms=${routeMs()}`);
     return NextResponse.json({ error: "A front selfie photo is required." }, { status: 400 });
   }
   if (fullBody !== undefined && !isDataUrl(fullBody)) {
+    console.log(`avatar error=bad-fullbody route_ms=${routeMs()}`);
     return NextResponse.json({ error: "The full-body photo must be an image data URL." }, { status: 400 });
   }
   const images = isDataUrl(fullBody) ? [selfie, fullBody] : [selfie];
@@ -74,11 +79,14 @@ export async function POST(req: Request) {
   });
 
   try {
-    const png = await editImage({ images, prompt, budget });
-    const path = `avatar/${crypto.randomUUID()}.png`;
-    const uploaded = await put(path, png, {
+    const bytes = images.reduce((sum, image) => sum + Buffer.byteLength(image), 0);
+    console.log(`avatar start images=${images.length} bytes=${bytes}`);
+    const raw = await editImage({ images, prompt, budget });
+    const format = detectImageFormat(raw);
+    const path = `avatar/${crypto.randomUUID()}.${format.ext}`;
+    const uploaded = await put(path, raw, {
       access: "public",
-      contentType: "image/png",
+      contentType: format.contentType,
       addRandomSuffix: false,
     });
     const previous = await readCache<AvatarPointer>(POINTER_KEY, Number.POSITIVE_INFINITY);
@@ -92,23 +100,25 @@ export async function POST(req: Request) {
     if (previous.hit && previous.data && previous.data.path !== path) {
       await del(previous.data.path).catch(() => undefined);
     }
-    console.log(`avatar ms=${Date.now() - started} version=${pointer.version}`);
+    console.log(`avatar ms=${routeMs()} version=${pointer.version} format=${format.ext}`);
     return NextResponse.json({ url: pointer.url, version: pointer.version });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Avatar creation failed.";
     if (/content_policy_violation/i.test(message)) {
+      console.log(`avatar error=content-policy route_ms=${routeMs()}`);
       return NextResponse.json(
         { error: "The image model declined that photo. Try a different selfie." },
         { status: 400 },
       );
     }
     if (isOutageError(err)) {
+      console.log(`avatar error=outage detail=${JSON.stringify(message.slice(0, 200))} route_ms=${routeMs()}`);
       return NextResponse.json(
         { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
         { status: 500 },
       );
     }
-    console.log(`avatar error=${JSON.stringify(message.slice(0, 200))} route_ms=${Date.now() - started}`);
+    console.log(`avatar error=${JSON.stringify(message.slice(0, 200))} route_ms=${routeMs()}`);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
