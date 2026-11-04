@@ -22,6 +22,23 @@ export const MIN_CONFIDENCE = 0.6;
 export const MIN_AREA_FRACTION = 0.02;
 export const DEDUPE_IOU = 0.6;
 
+/**
+ * Rescue tier: when NOTHING passes MIN_CONFIDENCE, the gate still gets a
+ * say on the best of the weak detections instead of an empty scan. The
+ * Spark is_single_garment gate (not the user) decides, and may retype
+ * (e.g. a 0.55 "jacket" that is really a hoodie).
+ */
+export const RESCUE_MIN_CONFIDENCE = 0.35;
+export const RESCUE_MAX_UNITS = 3;
+
+/** Top detections at rescue confidence: best-first, capped. */
+export function selectRescueDetections<T extends FilterDetection>(detections: T[]): T[] {
+  return [...detections]
+    .filter((det) => det.confidence >= RESCUE_MIN_CONFIDENCE)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, RESCUE_MAX_UNITS);
+}
+
 export const FOOTWEAR_NOUNS = new Set(["shoe", "sneaker", "boot"]);
 
 export function boxIoU(a: FilterBox, b: FilterBox): number {

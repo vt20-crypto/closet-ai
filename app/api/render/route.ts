@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 
-import { readCache, writeCache } from "@/lib/cache";
+import { readAvatarPointer } from "@/lib/avatarPointer";
+import { getBlobStore, readCache, writeCache } from "@/lib/cache";
 import { listItems } from "@/lib/closet";
 import { editImage } from "@/lib/meta/image";
 import {
@@ -14,13 +15,6 @@ import { verifyRender } from "@/lib/meta/spark";
 import { decideVerification, detectImageFormat, RENDER_PROMPT, renderCacheKey } from "@/lib/render";
 
 export const maxDuration = 60;
-
-interface AvatarPointer {
-  url: string;
-  path: string;
-  version: string;
-  createdAt: string;
-}
 
 interface RenderRecord {
   url: string;
@@ -56,27 +50,27 @@ export async function POST(req: Request) {
       console.log(`render error=unknown-item route_ms=${routeMs()}`);
       return NextResponse.json({ error: "Unknown closet item." }, { status: 400 });
     }
-    const pointer = await readCache<AvatarPointer>("avatar/current", Number.POSITIVE_INFINITY);
-    if (!pointer.hit || !pointer.data) {
+    const pointer = await readAvatarPointer(getBlobStore());
+    if (!pointer) {
       console.log(`render error=no-avatar route_ms=${routeMs()}`);
       return NextResponse.json({ error: "No avatar yet.", code: "no-avatar" }, { status: 404 });
     }
-    const version = pointer.data.version;
+    const version = pointer.version;
     const key = renderCacheKey(version, itemIds as string[]);
     const cached = await readCache<RenderRecord>(key, Number.POSITIVE_INFINITY);
     if (cached.hit && cached.data) {
-      console.log(`render ms=${Date.now() - started} cached=1 verified=1`);
+      console.log(`render ms=${Date.now() - started} cached=1 verified=1 avatar=${version}`);
       return NextResponse.json({ url: cached.data.url, cached: true, verified: true, invented: [] });
     }
 
     const refs = (itemIds as string[]).map((id) => byId.get(id)!);
-    const avatarRes = await fetch(pointer.data.url, { cache: "no-store" });
+    const avatarRes = await fetch(pointer.url, { cache: "no-store" });
     if (!avatarRes.ok) throw new Error("Could not load the avatar.");
     const avatarBytes = Buffer.from(await avatarRes.arrayBuffer());
     const avatarFormat = detectImageFormat(avatarBytes);
     const avatarDataUrl = `data:${avatarFormat.contentType};base64,${avatarBytes.toString("base64")}`;
     const referenceUrls = refs.map((item) => item.cutoutUrl);
-    console.log(`render start images=${1 + referenceUrls.length} bytes=${avatarBytes.length} format=${avatarFormat.ext}`);
+    console.log(`render start images=${1 + referenceUrls.length} bytes=${avatarBytes.length} format=${avatarFormat.ext} avatar=${version}`);
 
     let invented: string[] = [];
     let renderBytes: Buffer | null = null;
@@ -92,14 +86,14 @@ export async function POST(req: Request) {
       const verdict = await verifyRender({ renderDataUrl, referenceUrls, budget });
       invented = verdict.invented_items;
       const decision = decideVerification(verdict.garments_match, attempt);
-      console.log(`render verify attempt=${attempt} garments_match=${verdict.garments_match ? 1 : 0} invented=${invented.length} format=${renderFormat.ext} decision=${decision}`);
+      console.log(`render verify attempt=${attempt} garments_match=${verdict.garments_match ? 1 : 0} invented=${invented.length} format=${renderFormat.ext} avatar=${version} decision=${decision}`);
       if (decision !== "rerender") {
         if (decision === "fallback") renderBytes = null;
         break;
       }
     }
     if (!renderBytes) {
-      console.log(`render ms=${routeMs()} cached=0 verified=0 fallback=1 invented=${invented.length}`);
+      console.log(`render ms=${routeMs()} cached=0 verified=0 fallback=1 invented=${invented.length} avatar=${version}`);
       return NextResponse.json({ url: null, cached: false, verified: false, invented, fallback: true });
     }
     const format = detectImageFormat(renderBytes);
@@ -110,7 +104,7 @@ export async function POST(req: Request) {
       addRandomSuffix: false,
     });
     await writeCache(key, { url: uploaded.url } satisfies RenderRecord);
-    console.log(`render ms=${routeMs()} cached=0 verified=1 invented=${invented.length} format=${format.ext}`);
+    console.log(`render ms=${routeMs()} cached=0 verified=1 invented=${invented.length} format=${format.ext} avatar=${version}`);
     return NextResponse.json({ url: uploaded.url, cached: false, verified: true, invented });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Render failed.";

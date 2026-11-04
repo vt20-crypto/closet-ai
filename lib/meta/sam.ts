@@ -22,6 +22,7 @@ import {
 export const GARMENT_NOUNS = [
   "shirt",
   "t-shirt",
+  "top",
   "pants",
   "jeans",
   "shorts",
@@ -30,6 +31,7 @@ export const GARMENT_NOUNS = [
   "jacket",
   "sweater",
   "hoodie",
+  "sweatshirt",
   "coat",
   "shoe",
   "sneaker",

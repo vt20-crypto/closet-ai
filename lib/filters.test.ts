@@ -5,6 +5,7 @@ import {
   boxIoU,
   dedupeDetections,
   mergeFootwearPairs,
+  selectRescueDetections,
   shouldMergeShoePair,
   type FilterDetection,
 } from "./filters.ts";
@@ -81,4 +82,27 @@ test("mergeFootwearPairs leaves lone shoes single", () => {
   const { merged, singles } = mergeFootwearPairs(detections);
   assert.equal(merged.length, 0);
   assert.equal(singles.length, 1);
+});
+
+test("selectRescueDetections keeps the best weak detections, capped at 3", () => {
+  const box = { left: 0, top: 0, right: 100, bottom: 100 };
+  const detections = [
+    det("jacket", box, 0.55),
+    det("hoodie", box, 0.5),
+    det("sweater", box, 0.44),
+    det("coat", box, 0.4),
+    det("shirt", box, 0.34),
+    det("pants", box, 0.2),
+  ];
+  const rescued = selectRescueDetections(detections);
+  assert.deepEqual(
+    rescued.map((d) => d.noun),
+    ["jacket", "hoodie", "sweater"],
+  );
+});
+
+test("selectRescueDetections is empty when nothing reaches rescue confidence", () => {
+  const box = { left: 0, top: 0, right: 100, bottom: 100 };
+  assert.deepEqual(selectRescueDetections([det("jacket", box, 0.34)]), []);
+  assert.deepEqual(selectRescueDetections([]), []);
 });

@@ -16,6 +16,7 @@ import {
   MIN_CONFIDENCE,
   dedupeDetections,
   mergeFootwearPairs,
+  selectRescueDetections,
   type FilterBox,
 } from "@/lib/filters";
 import {
@@ -93,8 +94,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // Filter 1+2: confidence >= 0.90 AND mask area >= 2% of the image.
-    const confident = raw.filter((d) => d.confidence >= MIN_CONFIDENCE);
+    // Filter 1+2: confidence >= 0.60 AND mask area >= 2% of the image.
+    // Rescue tier: when nothing passes, the Spark gate still judges the
+    // best weak detections (>= 0.35, max 3) instead of an empty scan.
+    let confident = raw.filter((d) => d.confidence >= MIN_CONFIDENCE);
+    let rescued = false;
+    if (confident.length === 0) {
+      const fallback = selectRescueDetections(raw);
+      if (fallback.length > 0) {
+        confident = fallback;
+        rescued = true;
+      }
+    }
     const withArea = confident.flatMap((d) => {
       try {
         const filled = fillEnclosedHoles(
@@ -234,7 +245,8 @@ export async function POST(request: Request) {
           console.log(
             `segment photo=${photoPathname} sam_ms=${samMs} total_ms=${totalMs} raw=${raw.length} ` +
               `confident=${confident.length} area=${withArea.length} units=${units.length} ` +
-              `candidates=${saved.length}`,
+              `candidates=${saved.length} rescue=${rescued ? 1 : 0}` +
+              (rescued ? ` rescue_conf=[${confident.map((d) => d.confidence.toFixed(2)).join(",")}]` : ""),
           );
           send({
             event: "done",

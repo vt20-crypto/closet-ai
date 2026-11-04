@@ -223,6 +223,10 @@ export default function TodayPage() {
   // After results exist, Get outfits rests until the inputs change again.
   const getStale = pager !== null && ranKey === inputsKey;
 
+  // Render records are keyed by avatar version + look: a Redo drops every
+  // older record without a state-clearing effect.
+  const renderKey = (lookKey: string) => `${avatar?.version ?? "?"}|${lookKey}`;
+
   // The staged look: exactly one spotlight look at a time.
   const staged = page.length > 0 ? page[Math.min(stageIndex, page.length - 1)] : undefined;
   const stagedCards = staged
@@ -231,7 +235,7 @@ export default function TodayPage() {
         .filter((entry): entry is { id: string; card: ItemCard } => Boolean(entry.card))
         .sort((a, b) => slotRank(a.card.slot) - slotRank(b.card.slot))
     : [];
-  const stagedRender = staged ? renders[staged.key] : undefined;
+  const stagedRender = staged && avatar ? renders[renderKey(staged.key)] : undefined;
   const whenBits = [
     whenDate === null ? "Today" : whenDate === tomorrowISO() ? "Tomorrow" : whenDate,
     timeOfDay,
@@ -338,7 +342,7 @@ export default function TodayPage() {
       | "no-avatar"
       | null
     > => {
-      const key = outfit.key;
+      const key = renderKey(outfit.key);
       if (!avatar || rendersRef.current[key] || inflightRef.current.has(key)) return null;
       inflightRef.current.add(key);
       try {
@@ -392,7 +396,17 @@ export default function TodayPage() {
         setAvatar(null);
         return;
       }
-      setRenders((prev) => ({ ...prev, [outfit.key]: result }));
+      const atVersion = avatar.version;
+      const atKey = `${atVersion}|${outfit.key}`;
+      setRenders((prev) => {
+        // Drop records from older avatar versions while storing.
+        const next: typeof prev = {};
+        for (const [storedKey, record] of Object.entries(prev)) {
+          if (storedKey.startsWith(`${atVersion}|`)) next[storedKey] = record;
+        }
+        next[atKey] = result;
+        return next;
+      });
     };
     const look = current[Math.min(stageIndex, current.length - 1)];
     if (look) void store(look, false);
@@ -410,7 +424,7 @@ export default function TodayPage() {
         date: whenDate,
         timeOfDay,
         place: destination.trim() || weather?.placeName?.trim() || null,
-        renderUrl: renders[outfit.key]?.url ?? null,
+        renderUrl: renders[renderKey(outfit.key)]?.url ?? null,
       });
       window.sessionStorage.setItem("closet-ai-saved-look", JSON.stringify(look));
     } catch {

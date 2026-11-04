@@ -1,36 +1,66 @@
 import "server-only";
 
-import { list, put } from "@vercel/blob";
+import { del, list, put } from "@vercel/blob";
+
+import {
+  readJsonFromStore,
+  writeJsonToStore,
+  type BlobStore,
+} from "./blobStore.ts";
 
 /**
  * Tiny JSON cache on Vercel Blob (small values only: dress notes, outfit
  * responses). Reads check the blob's uploadedAt against the TTL; stale or
  * missing entries are a miss. Keys are caller-built `type/hash` paths.
+ * Writes overwrite (the old put threw on existing keys and the catch hid
+ * it, so redoing an avatar never updated its pointer).
  */
 
 export { hashKey } from "./hash.ts";
 
+/** The production Vercel Blob adapter for pointer/cache helpers. */
+export function getBlobStore(): BlobStore {
+  return {
+    async listBlobs(prefix: string) {
+      const page = await list({ prefix, limit: 1000 });
+      return page.blobs.map((blob) => ({
+        url: blob.url,
+        pathname: blob.pathname,
+        uploadedAt: blob.uploadedAt,
+      }));
+    },
+    async putBlob(pathname, body, contentType, opts) {
+      const uploaded = await put(pathname, body, {
+        access: "public",
+        contentType,
+        addRandomSuffix: false,
+        allowOverwrite: opts?.allowOverwrite,
+        cacheControlMaxAge: opts?.cacheControlMaxAge,
+      });
+      return uploaded.url;
+    },
+    async delBlobs(pathnames: string[]) {
+      await del(pathnames);
+    },
+    async fetchJson<T>(url: string) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) return null;
+        return (await res.json()) as T;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
 export async function readCache<T>(path: string, ttlMs: number): Promise<{ hit: boolean; data?: T }> {
-  try {
-    const page = await list({ prefix: `cache/${path}.json`, limit: 1 });
-    const blob = page.blobs[0];
-    if (!blob) return { hit: false };
-    if (Date.now() - new Date(blob.uploadedAt).getTime() > ttlMs) return { hit: false };
-    const res = await fetch(blob.url, { cache: "no-store" });
-    if (!res.ok) return { hit: false };
-    return { hit: true, data: (await res.json()) as T };
-  } catch {
-    return { hit: false };
-  }
+  return readJsonFromStore<T>(getBlobStore(), `cache/${path}.json`, ttlMs);
 }
 
 export async function writeCache(path: string, data: unknown): Promise<void> {
   try {
-    await put(`cache/${path}.json`, JSON.stringify(data), {
-      access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-    });
+    await writeJsonToStore(getBlobStore(), `cache/${path}.json`, data);
   } catch {
     // Cache writes are best-effort; the request already has its answer.
   }

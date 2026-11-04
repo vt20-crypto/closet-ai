@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { del, put } from "@vercel/blob";
 
-import { readCache, writeCache } from "@/lib/cache";
+import {
+  deleteOldPointers,
+  pointerPath,
+  readAvatarPointer,
+  writeAvatarPointer,
+  type AvatarPointer,
+} from "@/lib/avatarPointer";
+import { getBlobStore } from "@/lib/cache";
 import { editImage } from "@/lib/meta/image";
 import {
   createRetryBudget,
@@ -13,23 +19,15 @@ import { buildAvatarPrompt, detectImageFormat, type Vibe } from "@/lib/render";
 
 export const maxDuration = 60;
 
-const POINTER_KEY = "avatar/current";
 const MAX_DATA_URL = 4 * 1024 * 1024;
-
-interface AvatarPointer {
-  url: string;
-  path: string;
-  version: string;
-  createdAt: string;
-}
 
 const VIBES = ["playful", "minimal", "edgy", "classic"] as const;
 
-/** Current avatar, or null when the user has none yet. */
+/** Current avatar (newest versioned pointer), or null when none yet. */
 export async function GET() {
-  const cached = await readCache<AvatarPointer>(POINTER_KEY, Number.POSITIVE_INFINITY);
-  if (!cached.hit || !cached.data) return NextResponse.json({ avatar: null });
-  return NextResponse.json({ avatar: { url: cached.data.url, version: cached.data.version } });
+  const pointer = await readAvatarPointer(getBlobStore());
+  if (!pointer) return NextResponse.json({ avatar: null });
+  return NextResponse.json({ avatar: { url: pointer.url, version: pointer.version } });
 }
 
 function isDataUrl(value: unknown): value is string {
@@ -78,31 +76,42 @@ export async function POST(req: Request) {
     vibe: (VIBES as readonly string[]).includes(vibe as string) ? (vibe as Vibe) : null,
   });
 
+  const store = getBlobStore();
+  const previous = await readAvatarPointer(store);
+  let uploadedPath: string | null = null;
+  let pointerWritten = false;
   try {
     const bytes = images.reduce((sum, image) => sum + Buffer.byteLength(image), 0);
     console.log(`avatar start images=${images.length} bytes=${bytes}`);
     const raw = await editImage({ images, prompt, budget });
     const format = detectImageFormat(raw);
     const path = `avatar/${crypto.randomUUID()}.${format.ext}`;
-    const uploaded = await put(path, raw, {
-      access: "public",
-      contentType: format.contentType,
-      addRandomSuffix: false,
+    const url = await store.putBlob(path, raw, format.contentType, {
+      cacheControlMaxAge: 31536000,
     });
-    const previous = await readCache<AvatarPointer>(POINTER_KEY, Number.POSITIVE_INFINITY);
+    uploadedPath = path;
     const pointer: AvatarPointer = {
-      url: uploaded.url,
+      url,
       path,
       version: `v${Date.now()}`,
       createdAt: new Date().toISOString(),
     };
-    await writeCache(POINTER_KEY, pointer);
-    if (previous.hit && previous.data && previous.data.path !== path) {
-      await del(previous.data.path).catch(() => undefined);
+    // Strict: throws on failure, so nothing below runs on a missed write.
+    await writeAvatarPointer(store, pointer);
+    pointerWritten = true;
+    // The new pointer is confirmed: the old avatar file is now unreferenced.
+    if (previous && previous.path !== path) {
+      await store.delBlobs([previous.path]).catch(() => undefined);
     }
+    await deleteOldPointers(store, pointerPath(pointer.version));
     console.log(`avatar ms=${routeMs()} version=${pointer.version} format=${format.ext}`);
     return NextResponse.json({ url: pointer.url, version: pointer.version });
   } catch (err) {
+    // The new file is orphaned only when the pointer write failed; the
+    // previous avatar the pointer uses is never touched here.
+    if (uploadedPath && !pointerWritten) {
+      await store.delBlobs([uploadedPath]).catch(() => undefined);
+    }
     const message = err instanceof Error ? err.message : "Avatar creation failed.";
     if (/content_policy_violation/i.test(message)) {
       console.log(`avatar error=content-policy route_ms=${routeMs()}`);

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 
@@ -198,6 +199,13 @@ export default function CapturePage() {
   const tagTimers = useRef(new Map<string, number>());
   const [photoPrompt, setPhotoPrompt] = useState<PhotoPrompt | null>(null);
   const [retryAction, setRetryAction] = useState<null | (() => void)>(null);
+  /** Post-review summary, shown once a review round fully drains. */
+  const [doneCard, setDoneCard] = useState<{ added: number } | null>(null);
+  /** Items kept since the last drain; the done card reports this count. */
+  const roundAdded = useRef(0);
+  /** Fresh-closure reads for drain checks (keep/discard race a re-render). */
+  const candidatesRef = useRef<Candidate[]>([]);
+  candidatesRef.current = candidates;
 
   // Tag-timeout timers must not outlive the page.
   useEffect(() => {
@@ -255,6 +263,8 @@ export default function CapturePage() {
   ): Promise<number> {
     setStatus(`Finding clothes in ${label}…`);
     setRetryAction(null);
+    setDoneCard(null);
+    roundAdded.current = 0;
     const hiccupTimer = window.setTimeout(
       () => setStatus(`${META_HICCUP_MESSAGE} Retrying…`),
       8000,
@@ -529,8 +539,16 @@ export default function CapturePage() {
     );
   }
 
+  /** After a decision, show the done card when the review round drained. */
+  function checkDrained(remaining: Candidate[]) {
+    if (remaining.length === 0 && roundAdded.current > 0) {
+      setDoneCard({ added: roundAdded.current });
+      roundAdded.current = 0;
+    }
+  }
+
   async function keep(id: string) {
-    const target = candidates.find((c) => c.id === id);
+    const target = candidatesRef.current.find((c) => c.id === id);
     clearTagTimer(id);
     setActing(true);
     try {
@@ -543,8 +561,11 @@ export default function CapturePage() {
         const body = (await res.json()) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      setCandidates((prev) => prev.filter((c) => c.id !== id));
+      const remaining = candidatesRef.current.filter((c) => c.id !== id);
+      setCandidates(remaining);
+      roundAdded.current += 1;
       decrementPrompt(target);
+      checkDrained(remaining);
       setStatus("Kept! View it in your closet.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Keep failed.";
@@ -556,7 +577,7 @@ export default function CapturePage() {
   }
 
   async function discard(id: string) {
-    const target = candidates.find((c) => c.id === id);
+    const target = candidatesRef.current.find((c) => c.id === id);
     clearTagTimer(id);
     setActing(true);
     try {
@@ -565,8 +586,10 @@ export default function CapturePage() {
         const body = (await res.json()) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      setCandidates((prev) => prev.filter((c) => c.id !== id));
+      const remaining = candidatesRef.current.filter((c) => c.id !== id);
+      setCandidates(remaining);
       decrementPrompt(target);
+      checkDrained(remaining);
       setStatus("Discarded.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Discard failed.";
@@ -605,7 +628,7 @@ export default function CapturePage() {
   }
 
   async function keepAll() {
-    const acceptedIds = candidates
+    const acceptedIds = candidatesRef.current
       .filter((c) => !c.tagging && (!c.tags || c.tags.is_single_garment))
       .map((c) => c.id);
     if (acceptedIds.length === 0) return;
@@ -620,7 +643,10 @@ export default function CapturePage() {
         const body = (await res.json()) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      setCandidates((prev) => prev.filter((c) => !acceptedIds.includes(c.id)));
+      const remaining = candidatesRef.current.filter((c) => !acceptedIds.includes(c.id));
+      setCandidates(remaining);
+      roundAdded.current += acceptedIds.length;
+      checkDrained(remaining);
       setStatus("Kept everything! View your closet.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Keep all failed.";
@@ -638,6 +664,9 @@ export default function CapturePage() {
   );
   const rejected = candidates.filter((c) => !c.tagging && c.tags && !c.tags.is_single_garment);
   const locked = busy || acting || cropTarget !== null;
+  /** One clear state at a time: review, done, or the photo lists. */
+  const reviewing = candidates.length > 0;
+  const listsVisible = !reviewing && !doneCard;
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl md:max-w-[960px] flex-col gap-6 p-6">
@@ -683,7 +712,7 @@ export default function CapturePage() {
           onDone={(cropped) => void finishCrop(cropped)}
         />
       )}
-      {candidates.length > 0 && (
+      {reviewing && (
         <section aria-label="Found garments" className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-4">
             <h2 className="font-display text-2xl">
@@ -733,12 +762,12 @@ export default function CapturePage() {
           )}
         </section>
       )}
-      {photoPrompt && photoPrompt.remaining === 0 && (
-        <section aria-label="Photo cleanup" className="flex flex-col gap-4 rounded-full border border-(--border) p-4">
+      {listsVisible && photoPrompt && photoPrompt.remaining === 0 && (
+        <section aria-label="Photo cleanup" className="flex flex-col gap-4 rounded-2xl border border-(--border) p-4">
           {photoPrompt.found > 0 ? (
             <>
               <h2 className="font-display text-2xl">Get another item from this photo?</h2>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
                   disabled={locked}
@@ -760,26 +789,15 @@ export default function CapturePage() {
             </>
           ) : (
             <>
-              <h2 className="font-display text-2xl">No garments found in this photo.</h2>
+              <h2 className="font-display text-2xl">Couldn&apos;t spot it. Draw a box around the item.</h2>
               <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
                   disabled={locked}
                   onClick={() => void openBacklogCrop(photoPrompt.root)}
-                  className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+                  className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
                 >
-                  Crop another
-                </button>
-                <button
-                  type="button"
-                  disabled={locked}
-                  onClick={() => {
-                    setBusy(true);
-                    void scanPhoto(photoPrompt.root, "photo").finally(() => setBusy(false));
-                  }}
-                  className="min-h-14 flex-1 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-                >
-                  Scan again
+                  Draw a box
                 </button>
                 <button
                   type="button"
@@ -795,6 +813,36 @@ export default function CapturePage() {
           )}
         </section>
       )}
+      {!reviewing && doneCard && (
+        <section
+          aria-label="Scan complete"
+          className="flex flex-col gap-4 rounded-2xl border border-(--border-soft) bg-(--surface-2) p-5"
+        >
+          <h2 className="font-display text-2xl">
+            Added {doneCard.added} piece{doneCard.added === 1 ? "" : "s"} to your closet.
+          </h2>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setDoneCard(null);
+                inputRef.current?.click();
+              }}
+              className="min-h-14 flex-1 rounded-full bg-(--primary) text-lg font-semibold whitespace-nowrap text-(--primary-text) disabled:bg-(--disabled-bg) disabled:text-(--disabled-text)"
+            >
+              Scan another photo
+            </button>
+            <Link
+              href="/closet"
+              onClick={() => setDoneCard(null)}
+              className="flex min-h-14 flex-1 items-center justify-center rounded-full border border-(--border) text-lg font-semibold whitespace-nowrap"
+            >
+              View closet
+            </Link>
+          </div>
+        </section>
+      )}
+      {listsVisible && (
       <section aria-label="Not scanned yet" className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-4">
           <h2 className="font-display text-2xl">
@@ -858,46 +906,59 @@ export default function CapturePage() {
           </ul>
         )}
       </section>
-      {scanned.length > 0 && (
+      )}
+      {listsVisible && scanned.length > 0 && (
         <section aria-label="Scanned photos" className="flex flex-col gap-4">
           <h2 className="font-display text-2xl">Scanned ({scanned.length})</h2>
-          <ul className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+          <ul className="flex flex-col gap-3">
             {scanned.map((photo, index) => {
               const kept = meta[photo.pathname]?.keptIds.length ?? 0;
               return (
                 <li
                   key={photo.pathname}
-                  className="flex flex-col gap-2 rounded-full border border-(--border) p-3"
+                  className="flex items-center gap-3 rounded-2xl border border-(--border) bg-(--surface) p-3"
                 >
                   <img
                     src={photo.url}
                     alt={`Scanned closet photo ${index + 1}`}
                     loading="lazy"
-                    className="w-full rounded-xl"
+                    className="aspect-square w-16 shrink-0 rounded-xl object-cover"
                   />
-                  <p className="text-lg">
-                    {kept === 0 ? "No items kept yet." : `${kept} item${kept === 1 ? "" : "s"} kept.`}
+                  <p className="min-w-0 flex-1 text-lg">
+                    {kept === 0
+                      ? "No items kept yet."
+                      : `${kept} piece${kept === 1 ? "" : "s"} kept.`}
                   </p>
-                  <button
-                    type="button"
-                    disabled={locked}
-                    onClick={() => {
-                      setBusy(true);
-                      void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
-                    }}
-                    className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-                  >
-                    Scan again
-                  </button>
-                  <button
-                    type="button"
-                    disabled={locked}
-                    onClick={() => void removePhoto(photo)}
-                    aria-label={`Delete scanned photo ${index + 1}`}
-                    className="min-h-14 rounded-full border border-(--border) text-lg font-semibold disabled:text-(--disabled-text)"
-                  >
-                    Delete
-                  </button>
+                  <details className="relative shrink-0">
+                    <summary
+                      aria-label={`Actions for scanned photo ${index + 1}`}
+                      className="flex min-h-14 min-w-14 cursor-pointer list-none items-center justify-center rounded-full border border-(--border) text-2xl [&::-webkit-details-marker]:hidden"
+                    >
+                      ⋯
+                    </summary>
+                    <div className="absolute right-0 z-10 mt-2 flex min-w-44 flex-col gap-2 rounded-2xl border border-(--border-soft) bg-(--surface) p-3 shadow-[0_10px_24px_var(--shadow)]">
+                      <button
+                        type="button"
+                        disabled={locked}
+                        onClick={() => {
+                          setBusy(true);
+                          void scanPhoto(photo, `photo ${index + 1}`).finally(() => setBusy(false));
+                        }}
+                        className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+                      >
+                        Scan again
+                      </button>
+                      <button
+                        type="button"
+                        disabled={locked}
+                        onClick={() => void removePhoto(photo)}
+                        aria-label={`Delete scanned photo ${index + 1}`}
+                        className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold whitespace-nowrap disabled:text-(--disabled-text)"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </details>
                 </li>
               );
             })}
