@@ -135,10 +135,33 @@ export function markModelDead(model: string, now: number = Date.now()): void {
 }
 
 /**
+ * Outage signatures that map to the friendly hiccup (never raw 500s): model
+ * 404s, 429, and 5xx — including 503 from failover exhaustion below.
+ */
+export function isOutageError(err: unknown): boolean {
+  if (isTransientModel404(err)) return true;
+  const status = (err as { status?: number })?.status;
+  return status === 429 || (typeof status === "number" && status >= 500);
+}
+
+/** Exhaustion error carrying a 503 so routes map it to the hiccup. */
+function failoverExhausted(): unknown {
+  const err = new Error("no live spark model (all ids breaker-dead or outage)");
+  (err as { status?: number }).status = 503;
+  return err;
+}
+
+/**
  * Run fn against the failover chain, skipping breaker-dead ids. Returns the
- * result with the id that answered (log it as model_used). 404-model rotates
- * immediately; anything else — 429/5xx included — rethrows to the caller.
- * Strict-JSON replies may carry whitespace; JSON.parse handles that normally.
+ * result with the id that answered (log it as model_used). A 404-model
+ * rotates immediately with no backoff; anything else — 429/5xx included —
+ * rethrows to the caller. Strict-JSON replies may carry whitespace;
+ * JSON.parse handles that normally.
+ *
+ * Breaker rule: ids that 404 within one call are marked dead ONLY when
+ * another id in the same call answers. If every live id 404s, that is an
+ * outage, not dead models — nothing is marked and the chain retries from
+ * the first id with 1s/2s/4s backoff inside the budget.
  */
 export async function withModelFailover<T>(
   context: string,
@@ -146,30 +169,48 @@ export async function withModelFailover<T>(
   budget?: RetryBudget,
   now: () => number = Date.now,
 ): Promise<{ result: T; model: string }> {
+  const OUTAGE_BACKOFFS_MS = [1000, 2000, 4000];
+  let outageRounds = 0;
   let lastErr: unknown = null;
-  const tried = new Set<string>();
   for (;;) {
-    if (budget && now() > budget.deadline) {
-      throw lastErr ?? new Error(`${context}: retry budget exhausted with no live spark model`);
+    if (budget && now() > budget.deadline) throw lastErr ?? failoverExhausted();
+    const live = SPARK_MODELS.filter((m) => !isModelDead(m, now()));
+    if (live.length === 0) {
+      // Every id is breaker-dead from earlier calls: wait for one to release.
+      if (outageRounds >= OUTAGE_BACKOFFS_MS.length) throw failoverExhausted();
+      const delay = OUTAGE_BACKOFFS_MS[outageRounds];
+      outageRounds += 1;
+      console.log(`${context} all ids breaker-dead, retrying in ${delay}ms`);
+      if (budget && !(await sleepWithinBudget(delay, budget))) throw failoverExhausted();
+      if (!budget) await sleep(delay);
+      continue;
     }
-    const next = SPARK_MODELS.find((m) => !tried.has(m) && !isModelDead(m, now()));
-    if (!next) {
-      throw lastErr ?? new Error(`${context}: no live spark model (all ids tried or breaker-dead)`);
-    }
-    try {
-      const result = await fn(next);
-      console.log(`${context} model_used=${next}`);
-      return { result, model: next };
-    } catch (err) {
-      if (isTransientModel404(err)) {
-        markModelDead(next, now());
-        tried.add(next);
-        lastErr = err;
-        console.log(`${context} model_dead=${next} failing over (breaker ${MODEL_BREAKER_MS / 1000}s)`);
-        continue;
+    const failed404: string[] = [];
+    for (const model of live) {
+      try {
+        const result = await fn(model);
+        for (const dead of failed404) {
+          markModelDead(dead, now());
+          console.log(`${context} model_dead=${dead} (sibling ${model} answered)`);
+        }
+        console.log(`${context} model_used=${model}`);
+        return { result, model };
+      } catch (err) {
+        if (isTransientModel404(err)) {
+          failed404.push(model);
+          lastErr = err;
+          continue; // no backoff on the dead id
+        }
+        throw err;
       }
-      throw err;
     }
+    // The whole pass 404'd: outage, not dead models — retry the chain.
+    if (outageRounds >= OUTAGE_BACKOFFS_MS.length) throw lastErr ?? failoverExhausted();
+    const delay = OUTAGE_BACKOFFS_MS[outageRounds];
+    outageRounds += 1;
+    console.log(`${context} all live ids 404'd (outage), retrying chain in ${delay}ms`);
+    if (budget && !(await sleepWithinBudget(delay, budget))) throw lastErr ?? failoverExhausted();
+    if (!budget) await sleep(delay);
   }
 }
 

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createRetryBudget,
   isModelDead,
+  isOutageError,
   isTransientModel404,
   markModelDead,
   MODEL_BREAKER_MS,
@@ -269,17 +270,68 @@ test("failover rethrows 429/5xx and non-model 404s without marking ids dead", as
   }
 });
 
-test("failover throws when every id is tried or breaker-dead", async () => {
+test("all-breaker-dead exhaustion carries 503 for the hiccup mapping", async () => {
   resetModelBreaker();
   for (const model of SPARK_MODELS) markModelDead(model);
   let calls = 0;
-  await assert.rejects(
-    withModelFailover("test", async () => {
-      calls += 1;
-      return "ok";
-    }),
-  );
+  let err: unknown = null;
+  try {
+    await withModelFailover(
+      "test",
+      async () => {
+        calls += 1;
+        return "ok";
+      },
+      createRetryBudget(Date.now() - 1000),
+    );
+  } catch (e) {
+    err = e;
+  }
   assert.equal(calls, 0);
+  assert.equal((err as { status?: number })?.status, 503);
+  assert.equal(isOutageError(err), true);
+});
+
+test("whole-chain 404 is an outage: no marks, chain retried, 404 rethrown", async () => {
+  resetModelBreaker();
+  const tried: string[] = [];
+  let err: unknown = null;
+  try {
+    await withModelFailover(
+      "test",
+      async (model) => {
+        tried.push(model);
+        throw apiError(404, "404 The requested model was not found");
+      },
+      // ~2.5s: first full pass, 1s sleep, second pass, then the budget gives out.
+      createRetryBudget(Date.now() + 2500),
+    );
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "outage must throw");
+  // At least one full pass over the chain, starting from 1.3.
+  assert.deepEqual(tried.slice(0, 4), SPARK_MODELS);
+  // Outage marks nothing dead.
+  for (const model of SPARK_MODELS) assert.equal(isModelDead(model), false);
+  // The rethrown 404 maps to the hiccup like any model outage.
+  assert.equal(isTransientModel404(err), true);
+  assert.equal(isOutageError(err), true);
+});
+
+test("isOutageError maps 503/429/5xx/model-404 to the hiccup, nothing else", () => {
+  const outage = (status: number, message: string) => {
+    const err = new Error(message) as Error & { status?: number };
+    err.status = status;
+    return err;
+  };
+  assert.equal(isOutageError(outage(503, "no live spark model")), true);
+  assert.equal(isOutageError(apiError(429, "429 rate limited")), true);
+  assert.equal(isOutageError(apiError(500, "500 inference failed")), true);
+  assert.equal(isOutageError(apiError(404, "404 The requested model was not found")), true);
+  assert.equal(isOutageError(apiError(400, "400 bad request")), false);
+  assert.equal(isOutageError(apiError(404, "404 Not Found")), false);
+  assert.equal(isOutageError(null), false);
 });
 
 test("failover respects a spent budget without calling", async () => {

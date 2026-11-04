@@ -191,6 +191,8 @@ export interface PickOutfitsInput {
   occasion: string | null;
   destination: string | null;
   dressCodeNote: string | null;
+  /** e.g. "tomorrow (2026-11-05), evening"; null for today, any time. */
+  whenLine: string | null;
   excludeKeys: string[];
   retryProblems: string | null;
   /** Shared per-request retry deadline (never past route maxDuration - 5s). */
@@ -242,6 +244,7 @@ export async function pickOutfits(input: PickOutfitsInput): Promise<RawOutfit[]>
   ];
   if (input.destination) parts.push(`Destination: ${input.destination}.`);
   if (input.dressCodeNote) parts.push(`Dress code to respect: ${input.dressCodeNote}`);
+  if (input.whenLine) parts.push(`When: ${input.whenLine}.`);
   if (input.excludeKeys.length > 0) {
     parts.push(
       `Do NOT repeat these already-shown combinations (sorted id sets): ${input.excludeKeys.join("; ")}.`,
@@ -282,6 +285,8 @@ export interface VoiceSlots {
   occasion_text: string | null;
   destination: string | null;
   city: string | null;
+  date_text: string | null;
+  time: string | null;
 }
 
 const VOICE_SCHEMA = {
@@ -292,8 +297,10 @@ const VOICE_SCHEMA = {
     occasion_text: { type: ["string", "null"] },
     destination: { type: ["string", "null"] },
     city: { type: ["string", "null"] },
+    date_text: { type: ["string", "null"] },
+    time: { type: ["string", "null"] },
   },
-  required: ["mood", "occasion", "occasion_text", "destination", "city"],
+  required: ["mood", "occasion", "occasion_text", "destination", "city", "date_text", "time"],
   additionalProperties: false,
 } as const;
 
@@ -314,7 +321,9 @@ export async function parseVoiceSlots(
     `(prefer: calm, confident, cozy, bold, lazy); occasion is one word for the event type ` +
     `(prefer: work, class, date, gym, party, errands, brunch, dinner); ` +
     `occasion_text is any extra detail; ` +
-    `destination is a named venue or place; city is where they are or are going. ` +
+    `destination is a named venue or place; city is where they are or are going; ` +
+    `date_text is any date reference (tomorrow, friday, june 3) or null; ` +
+    `time is morning, afternoon, or evening when mentioned (breakfast/brunch map to morning, lunch to afternoon, dinner/drinks/night to evening), else null. ` +
     `Transcript: ${JSON.stringify(transcript.slice(0, 500))}`;
   const started = Date.now();
   const { result: res } = await withModelFailover(
@@ -337,6 +346,8 @@ export async function parseVoiceSlots(
     occasion_text: str(parsed.occasion_text),
     destination: str(parsed.destination),
     city: str(parsed.city),
+    date_text: str(parsed.date_text),
+    time: str(parsed.time),
   };
 }
 

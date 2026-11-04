@@ -11,6 +11,8 @@ export interface VoiceSlots {
   occasion_text: string | null;
   destination: string | null;
   city: string | null;
+  date_text: string | null;
+  time: string | null;
 }
 
 interface VoiceButtonProps {
@@ -108,7 +110,7 @@ export default function VoiceButton({ disabled, keywords, onResult, report, onAc
       };
       if (!res.ok || !body.transcript) throw new Error(body.error ?? `HTTP ${res.status}`);
       setActivePhase("idle");
-      onResult(body.transcript, body.slots ?? { mood: null, occasion: null, occasion_text: null, destination: null, city: null });
+      onResult(body.transcript, body.slots ?? { mood: null, occasion: null, occasion_text: null, destination: null, city: null, date_text: null, time: null });
     } catch (err) {
       setActivePhase("idle");
       const message = err instanceof Error ? err.message : "Transcription failed.";

@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { beep, unlockBeep } from "@/lib/beep";
 import type { ClosetItem } from "@/lib/closet";
+import { normalizeTimeOfDay, resolveDateText } from "@/lib/when";
 import {
   advance,
   backStep,
@@ -19,7 +21,7 @@ import {
 import { speak, unlockSpeech } from "@/lib/speak";
 
 import { Sticker } from "../sticker";
-import VoiceButton from "../today/voice-button";
+import VoiceButton from "../style/voice-button";
 
 /** DressItem (order/slot/nickname) plus the display fields the page speaks. */
 interface ClosetView extends DressItem {
@@ -90,8 +92,12 @@ export default function DressPage() {
   const [wantedIds, setWantedIds] = useState<string[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [skippedIds, setSkippedIds] = useState<string[]>([]);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraFailed, setCameraFailed] = useState(false);
+  const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const dressRef = useRef<DressState | null>(null);
   const itemsRef = useRef<Record<string, ClosetView>>({});
@@ -106,6 +112,7 @@ export default function DressPage() {
     if (active) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      setCameraReady(false);
     } else if (phaseRef.current === "guiding") {
       void ensureCamera();
     }
@@ -120,6 +127,7 @@ export default function DressPage() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraReady(false);
   }
 
   useEffect(() => stopCamera, []);
@@ -194,9 +202,19 @@ export default function DressPage() {
   }
 
   async function ensureCamera(): Promise<boolean> {
+    // No overlapping starts: a tap right after voice must not double-open.
+    if (startingRef.current) return false;
+    startingRef.current = true;
+    setCameraFailed(false);
     try {
-      if (streamRef.current) return true;
-      if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) return false;
+      if (streamRef.current) {
+        setCameraReady(true);
+        return true;
+      }
+      if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
+        setCameraFailed(true);
+        return false;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
@@ -205,12 +223,31 @@ export default function DressPage() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play().catch(() => undefined);
+        // Wait until frames actually flow; a playing-but-empty stream
+        // snapshots black, so the tap target stays shut until ready.
+        const t0 = Date.now();
+        while (videoRef.current.readyState < 2 && Date.now() - t0 < 4000) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
       }
-      return true;
+      const ready =
+        !!streamRef.current && !!videoRef.current && videoRef.current.readyState >= 2;
+      setCameraReady(ready);
+      if (!ready) setCameraFailed(true);
+      return ready;
     } catch {
+      setCameraFailed(true);
       return false;
+    } finally {
+      startingRef.current = false;
     }
   }
+
+  // After any transition into guiding, (re)attach once the preview element
+  // has mounted — startAgain relies on this (its own call would run first).
+  useEffect(() => {
+    if (phase === "guiding" && !streamRef.current) void ensureCamera();
+  }, [phase]);
 
   function snapPhoto(): Promise<Blob | null> {
     return new Promise((resolve) => {
@@ -313,14 +350,15 @@ export default function DressPage() {
     setStatus("Stopped. Tap Start getting dressed to begin again, or pick another outfit below.");
   }
 
-  function pickAnother() {
+  // Back to /style with the same results (session restore): router.back
+  // when this page was reached from there, plain navigation otherwise.
+  function backToStyle() {
     stopCamera();
-    setDress(null);
-    setTrace([]);
-    setSkippedIds([]);
-    setBusy(false);
-    setPhase("need-outfit");
-    setStatus("Tell me the occasion and I'll pick an outfit to dress you in.");
+    if (window.history.length > 1) {
+      router.back();
+    } else {
+      router.push("/style");
+    }
   }
 
   function startAgain() {
@@ -333,7 +371,6 @@ export default function DressPage() {
     setDress(fresh);
     setTrace([]);
     setPhase("guiding");
-    void ensureCamera();
     say(guidanceFor(fresh, itemsRef.current));
   }
 
@@ -348,6 +385,7 @@ export default function DressPage() {
   async function tapToCheck() {
     const state = dressRef.current;
     if (!state || busy || phase !== "guiding") return;
+    if (!cameraReady && !cameraFailed) return;
     const photo = await snapPhoto();
     if (!photo) {
       // No live camera: fall back to the capture picker.
@@ -425,7 +463,7 @@ export default function DressPage() {
     }
   }
 
-  async function voiceStart(transcript: string, slots: { mood: string | null; occasion: string | null; occasion_text: string | null; destination: string | null; city: string | null }) {
+  async function voiceStart(transcript: string, slots: { mood: string | null; occasion: string | null; occasion_text: string | null; destination: string | null; city: string | null; date_text: string | null; time: string | null }) {
     setStatus(`Getting an outfit for "${transcript}"…`);
     try {
       const res = await fetch("/api/outfits", {
@@ -437,6 +475,8 @@ export default function DressPage() {
           occasionText: slots.occasion_text ?? undefined,
           destination: slots.destination ?? undefined,
           city: slots.city ?? undefined,
+          date: resolveDateText(slots.date_text) ?? undefined,
+          timeOfDay: normalizeTimeOfDay(slots.time) ?? undefined,
           exclude: [],
         }),
       });
@@ -469,13 +509,15 @@ export default function DressPage() {
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 p-6 md:max-w-[960px]">
       <h1 className="font-display text-4xl">Get dressed</h1>
 
-      <video
-        ref={videoRef}
-        muted
-        playsInline
-        aria-label="Camera preview"
-        className="aspect-[4/3] w-full rounded-2xl bg-(--surface-2) object-cover"
-      />
+      {phase !== "finished" && (
+        <video
+          ref={videoRef}
+          muted
+          playsInline
+          aria-label="Camera preview"
+          className="aspect-[4/3] w-full rounded-2xl bg-(--surface-2) object-cover"
+        />
+      )}
       <input
         ref={fileRef}
         type="file"
@@ -504,7 +546,7 @@ export default function DressPage() {
           >
             Reload
           </button>
-          <Link href="/today" className="text-lg underline">
+          <Link href="/style" className="text-lg underline">
             Pick an outfit on Today instead
           </Link>
         </section>
@@ -523,8 +565,8 @@ export default function DressPage() {
               if (speakIt) speak(message);
             }}
           />
-          <Link href="/today" className="text-lg underline">
-            Or pick an outfit on Today first
+          <Link href="/style" className="text-lg underline">
+            Or pick an outfit on Style first
           </Link>
         </section>
       )}
@@ -551,7 +593,7 @@ export default function DressPage() {
           </button>
           <button
             type="button"
-            onClick={pickAnother}
+            onClick={backToStyle}
             className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
           >
             Pick another outfit
@@ -563,14 +605,16 @@ export default function DressPage() {
         <>
           <button
             type="button"
-            disabled={busy || phase === "finished"}
+            disabled={busy || phase === "finished" || (phase === "guiding" && !cameraReady && !cameraFailed)}
             onClick={() => void tapToCheck()}
             aria-label={
               phase === "finished"
                 ? "Outfit complete"
                 : busy
                   ? "Checking what you're wearing"
-                  : "Check this step. Tap to take a snapshot."
+                  : !cameraReady && !cameraFailed
+                    ? "Camera starting. Wait before tapping to check."
+                    : "Check this step. Tap to take a snapshot."
             }
             className="flex min-h-[40dvh] flex-1 flex-col justify-center gap-4 rounded-[20px] border border-(--border-soft) bg-(--surface) p-6 text-left shadow-[0_10px_24px_var(--shadow)]"
           >
@@ -586,7 +630,11 @@ export default function DressPage() {
                 ? "Outfit complete."
                 : busy
                   ? "Checking…"
-                  : "Tap anywhere to check this item."}
+                  : cameraFailed
+                    ? "Tap to choose a photo of this item."
+                    : cameraReady
+                      ? "Tap anywhere to check this item."
+                      : "Camera starting…"}
             </span>
           </button>
 
@@ -684,15 +732,19 @@ export default function DressPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={pickAnother}
+                  onClick={backToStyle}
                   className="min-h-14 rounded-full border border-(--border) px-6 text-lg font-semibold"
                 >
                   Pick another outfit
                 </button>
               </div>
-              <Link href="/today" className="text-lg underline">
-                Back to Today
-              </Link>
+              <button
+                type="button"
+                onClick={backToStyle}
+                className="min-h-11 self-start px-1 py-2 text-lg underline"
+              >
+                Back to Style
+              </button>
             </section>
           )}
         </>

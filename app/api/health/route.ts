@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { getMetaClient } from "@/lib/meta/client";
-import { createRetryBudget, withModelFailover } from "@/lib/meta/retry";
+import {
+  createRetryBudget,
+  isOutageError,
+  META_HICCUP_MESSAGE,
+  META_UNAVAILABLE_CODE,
+  withModelFailover,
+} from "@/lib/meta/retry";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -37,6 +43,13 @@ export async function GET(request: Request) {
     cache = { at: Date.now(), model, latencyMs };
     return NextResponse.json({ ok: true, model, latencyMs, cached: false });
   } catch (err) {
+    // Failover exhaustion (503) and other outages become the hiccup, not a raw 500.
+    if (isOutageError(err)) {
+      return NextResponse.json(
+        { ok: false, error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },
+        { status: 500 },
+      );
+    }
     const message = err instanceof Error ? err.message : "Health check failed.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }

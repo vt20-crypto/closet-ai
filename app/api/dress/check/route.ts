@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { listItems, type ClosetItem } from "@/lib/closet";
 import {
   createRetryBudget,
-  isTransientModel404,
+  isOutageError,
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
@@ -95,9 +95,7 @@ export async function POST(req: Request) {
   } catch (err) {
     // Only outage signatures become the friendly hiccup; 400/401 and other
     // failures surface with their real message (same rule as /api/outfits).
-    const status = (err as { status?: number })?.status;
-    const outage =
-      isTransientModel404(err) || status === 429 || (typeof status === "number" && status >= 500);
+    const outage = isOutageError(err);
     if (outage) {
       return NextResponse.json(
         { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },

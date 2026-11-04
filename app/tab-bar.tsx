@@ -43,7 +43,7 @@ export function ClosetIcon() {
 
 export const TABS = [
   { href: "/", label: "Home", Icon: HomeIcon },
-  { href: "/today", label: "Today", Icon: TodayIcon },
+  { href: "/style", label: "Style", Icon: TodayIcon },
   { href: "/capture", label: "Add", Icon: AddIcon },
   { href: "/closet", label: "Closet", Icon: ClosetIcon },
 ] as const;

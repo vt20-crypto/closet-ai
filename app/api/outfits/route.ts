@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { listItems } from "@/lib/closet";
 import {
   createRetryBudget,
-  isTransientModel404,
+  isOutageError,
   META_HICCUP_MESSAGE,
   META_UNAVAILABLE_CODE,
 } from "@/lib/meta/retry";
@@ -19,7 +19,7 @@ import {
 import { fallbackOutfits } from "@/lib/fallbackOutfits";
 import { applyScoreThreshold } from "@/lib/outfitScores";
 import { hashKey, readCache, writeCache } from "@/lib/cache";
-import { geocodeCity, getWeather, type WeatherSummary } from "@/lib/weather";
+import { geocodeCity, getWeatherForDate, type WeatherSummary } from "@/lib/weather";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -51,7 +51,16 @@ export async function POST(request: Request) {
       city?: unknown;
       exclude?: unknown;
       minScore?: unknown;
+      date?: unknown;
+      timeOfDay?: unknown;
     };
+    // When: local YYYY-MM-DD or null for today; time of day or null.
+    const dateISO =
+      typeof body.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : null;
+    const timeOfDay =
+      body.timeOfDay === "morning" || body.timeOfDay === "afternoon" || body.timeOfDay === "evening"
+        ? body.timeOfDay
+        : null;
     // First-pass AI threshold is 7; "More ideas" passes minScore 5.
     const threshold = body.minScore === 5 ? 5 : 7;
     // Mood and occasion are both optional; nulls flow into the pick and the fallback.
@@ -105,6 +114,8 @@ export async function POST(request: Request) {
         loc: locKey,
         c: `${latestCreatedAt}:${items.length}`,
         day: new Date().toISOString().slice(0, 10),
+        when: dateISO,
+        tod: timeOfDay,
       }),
     )}`;
     interface CachedOutfit {
@@ -165,11 +176,11 @@ export async function POST(request: Request) {
       const weatherPromise: Promise<WeatherSummary | null> = (async () => {
         const t = performance.now();
         try {
-          if (lat !== null && lon !== null) return getWeather(lat, lon);
+          if (lat !== null && lon !== null) return getWeatherForDate(lat, lon, dateISO);
           if (city) {
             const geo = await geocodeCity(city);
             if (geo) {
-              const summary = await getWeather(geo.lat, geo.lon);
+              const summary = await getWeatherForDate(geo.lat, geo.lon, dateISO);
               return summary ? { ...summary, placeName: geo.name } : null;
             }
           }
@@ -200,6 +211,8 @@ export async function POST(request: Request) {
         layer: item.tags.layer,
       }));
 
+      const whenLine =
+        dateISO || timeOfDay ? `${dateISO ?? "today"}${timeOfDay ? `, ${timeOfDay}` : ""}` : null;
       const baseInput = {
         closet,
         weatherLine,
@@ -207,6 +220,7 @@ export async function POST(request: Request) {
         occasion,
         destination,
         dressCodeNote: dressCode?.note ?? null,
+        whenLine,
         excludeKeys: [...excludeKeys],
         retryProblems: null as string | null,
         budget: pickBudget,
@@ -258,9 +272,7 @@ export async function POST(request: Request) {
       } catch (err) {
         // Rule fallback only on outage signatures (model 404 / 429 / 5xx).
         // 400/401 and anything non-Meta throw to the 500 path as real errors.
-        const status = (err as { status?: number })?.status;
-        const outage =
-          isTransientModel404(err) || status === 429 || (typeof status === "number" && status >= 500);
+        const outage = isOutageError(err);
         if (!outage) throw err;
         console.log(`outfits pick failed, using rule fallback: ${(err as Error).message.slice(0, 120)}`);
         const fbItems = items.map((item) => ({
@@ -313,7 +325,7 @@ export async function POST(request: Request) {
     const totalMs = Math.round(performance.now() - tAll);
     console.log(
       `outfits cache=${cacheStatus} weather_ms=${weatherMs} dress_ms=${dressMs} dress=${dressStatus} citations=${dressCitations} ` +
-        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source}`,
+        `spark_ms=${sparkMs} total_ms=${totalMs} valid=${picked.length} threshold=${threshold} relaxed=${relaxed} source=${source} when=${dateISO ?? "today"}:${timeOfDay ?? "-"}`,
     );
     return NextResponse.json({
       source,
@@ -338,9 +350,7 @@ export async function POST(request: Request) {
     console.log(`outfits ERROR ${message.slice(0, 160)}`);
     // Only outage signatures become the friendly hiccup; 400/401 and other
     // failures surface with their real message.
-    const status = (err as { status?: number })?.status;
-    const outage =
-      isTransientModel404(err) || status === 429 || (typeof status === "number" && status >= 500);
+    const outage = isOutageError(err);
     if (outage) {
       return NextResponse.json(
         { error: META_HICCUP_MESSAGE, code: META_UNAVAILABLE_CODE },

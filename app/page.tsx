@@ -57,7 +57,7 @@ export default async function Home() {
         <MeButton />
       </div>
       <Link
-        href="/today"
+        href="/style"
         className="inline-flex min-h-14 items-center justify-center rounded-full bg-(--primary) px-6 text-xl font-semibold text-(--primary-text)"
       >
         Plan today&apos;s outfit
